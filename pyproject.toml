@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ntp-anchor"
+version = "0.1.0"
+description = "Cross-platform NTP time synchronization package"
+readme = "README.md"
+
+license = {file = "LICENSE"}
+requires-python = ">=3.7"
+dependencies = [
+    "ntplib>=0.4.0"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
+[tool.setuptools.packages.find]
+exclude = ["tests*"]
