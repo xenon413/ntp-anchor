@@ -1,6 +1,6 @@
 import types
 from types import SimpleNamespace
-from src import windows_time_sync
+from ntp_anchor.core import windows_time_sync
 
 
 def test_start_time_service_already_running(monkeypatch):

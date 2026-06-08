@@ -1,4 +1,4 @@
-from .src import (
+from .core import (
     start_time_service, 
     sync_time,
     get_ntp_time_offset,

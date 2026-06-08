@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from src import linux_time_sync
+from ntp_anchor.core import linux_time_sync
 
 
 def test_command_exists(monkeypatch):
