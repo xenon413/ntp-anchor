@@ -1,12 +1,8 @@
 import ntplib
 import platform
 import logging
-import sys
 import threading
-
-NTP_SERVER = ["pool.ntp.org", "time.google.com", "time2.google.com"]
-THRESH = 0.5 # max diff before sync
-CYCLE = 300 # cycle in seconds
+from .exceptions import *
 
 OS = platform.system().lower()
 
@@ -21,30 +17,29 @@ try:
         from .linux_time_sync import LinuxTimeSync
         service = LinuxTimeSync
 
-    elif OS == "darwin" and DarwinTimeSync is not None:
+    elif OS == "darwin":
         from .darwin_time_sync import DarwinTimeSync
         service = DarwinTimeSync
         
     elif OS == "java":
         service = None
 except Exception as e:
-    logger.warning(f"failed to initialize time sync service for {OS}: {e}")
-    sys.exit()
+    logger.critical(f"failed to initialize time sync service for {OS}: {e}")
+    raise UnexpectedError(f"failed to initialize time sync service for {OS}") from e
 
 # setup warning for incomplete services
 if service is None:
     logger.critical(f"time sync not supported on current os: {OS}")
-    sys.exit()
+    raise UnsupportedOSError(f"time sync not supported on current os: {OS}")
 
 # ---------- NTP Drift Check ----------
 # support cross platform
-def get_ntp_time_offset(ntp_server:list)->int|None:
+def get_ntp_time_offset(ntp_server:tuple[str])->int|None:
     '''
     Query provided NTP servers sequentially and return the first successful
     time offset in seconds. Returns the offset as a float or `None` if all
     servers fail.
     '''
-    ntp_server = ntp_server or NTP_SERVER
     for server in ntp_server:
         try:
             logger.debug(f"getting ntp time offset with: {server}")
@@ -58,7 +53,7 @@ def get_ntp_time_offset(ntp_server:list)->int|None:
 
     return None
 
-def check_and_sync(ntp_server:list, thresh:float)->bool:
+def check_and_sync(ntp_server:tuple[str], thresh:float)->bool:
     '''
     Check the system time against NTP servers and synchronize the system
     clock if the measured offset exceeds `thresh` seconds. Returns `True`
@@ -84,9 +79,10 @@ def check_and_sync(ntp_server:list, thresh:float)->bool:
             return True
     except Exception as e:
         logger.critical(f"unexpected error: {e}")
+        raise UnexpectedError from e
 
 # make it simple because in our case we only need one process at a time 
-def check_and_sync_thread(ntp_server:list, thresh:float, cycle:float)->tuple[threading.Thread, threading.Event]:
+def check_and_sync_thread(ntp_server:tuple[str], thresh:float, cycle:float)->tuple[threading.Thread, threading.Event]:
     '''
     Launch and return a background thread that periodically calls
     `check_and_sync(ntp_server, thresh)` every `cycle` seconds. Returns a
@@ -95,9 +91,11 @@ def check_and_sync_thread(ntp_server:list, thresh:float, cycle:float)->tuple[thr
     event = threading.Event()
     def func():
         while not event.is_set():
-            check_and_sync(ntp_server, thresh)
-            event.wait(timeout=cycle)
-
+            try:
+                check_and_sync(ntp_server, thresh)
+                event.wait(timeout=cycle)
+            except:
+                pass
     thread = threading.Thread(target=func, daemon=True)
     thread.start()
     return thread, event
