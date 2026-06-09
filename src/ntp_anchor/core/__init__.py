@@ -1,9 +1,9 @@
 import threading
 from .core_logic import (
     service,
-    get_ntp_time_offset,
-    check_and_sync,
-    check_and_sync_thread
+    get_ntp_time_offset as _get_ntp_time_offset,
+    check_and_sync as _check_and_sync,
+    check_and_sync_thread as _check_and_sync_thread
 )
 
 def get_ntp_time_offset(
@@ -14,7 +14,7 @@ def get_ntp_time_offset(
     responsive server. Returns the offset as a number or `None` if all
     servers fail.
     '''
-    return get_ntp_time_offset(ntp_server)
+    return _get_ntp_time_offset(ntp_server)
 
 def start_time_service()->bool:
     '''
@@ -39,7 +39,7 @@ def check_and_sync(
     the threshold. Returns `True` on success or if already within threshold,
     `False` on failure.
     '''
-    return check_and_sync(ntp_server, thresh)
+    return _check_and_sync(ntp_server, thresh)
 
 def check_and_sync_thread(
         ntp_server:tuple[str, ...]=("pool.ntp.org", "time.google.com", "time2.google.com"), 
@@ -51,7 +51,7 @@ def check_and_sync_thread(
     `cycle` seconds. Returns `(thread, stop_event)` where setting the event
     stops the background loop.
     '''
-    return check_and_sync_thread(ntp_server, thresh, cycle)
+    return _check_and_sync_thread(ntp_server, thresh, cycle)
 
 __all__ = [
     "start_time_service", 

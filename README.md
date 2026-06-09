@@ -7,22 +7,37 @@ This repository provides lightweight platform-specific helpers to start the
 system time service and trigger an immediate time synchronization when the
 measured NTP offset exceeds a threshold.
 
-Quick usage
+## Installation
 
-- Install runtime dependencies:
-
-```
-python -m pip install -r requirements.txt
-```
-
-- Run the test suite (optional):
+- To install the core package:
 
 ```
-python -m pip install pytest
-pytest -q
+pip install git+https://github.com/xenon413/ntp-anchor.git@main
 ```
 
-Example (after installing the package or running from the project root):
+## Development & Testing
+
+If you want to run the test suite or modify the codebase, clone the repository locally and install the development dependencies:
+
+# 1. Clone the repository to your computer
+
+```
+git clone https://github.com/xenon413/ntp-anchor.git
+```
+
+# 2. Install the package in editable mode with testing tools
+
+```
+pip install -e .[test]
+```
+
+# 3. Run the test suite
+
+```
+pytest
+```
+
+Example:
 
 ```python
 # When installed as a package (package name may be `ntp_anchor` when
@@ -51,10 +66,7 @@ Public API
 
 Notes
 
-- Windows: `sync_time()` invokes `w32tm /resync` and typically requires an
-  elevated process to succeed.
-- The codebase uses Python 3.10+ union type syntax (e.g. `X | None`). Python
-  3.10 or newer is recommended.
+- `sync_time()` typically requires an elevated process(Administrator) to succeed.
 
 License
 
