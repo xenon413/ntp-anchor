@@ -8,6 +8,7 @@ OS = platform.system().lower()
 
 logger = logging.getLogger(__name__)
 service = None
+
 try:
     if OS == "windows":
         from .windows_time_sync import WindowsTimeSync
@@ -24,7 +25,6 @@ try:
     elif OS == "java":
         service = None
 except Exception as e:
-    logger.critical(f"failed to initialize time sync service for {OS}: {e}")
     raise UnexpectedError(f"failed to initialize time sync service for {OS}") from e
 
 # setup warning for incomplete services
@@ -34,69 +34,49 @@ if service is None:
 
 # ---------- NTP Drift Check ----------
 # support cross platform
-def get_ntp_time_offset(ntp_server:tuple[str])->int|None:
-    '''
-    Query provided NTP servers sequentially and return the first successful
-    time offset in seconds. Returns the offset as a float or `None` if all
-    servers fail.
-    '''
+def get_ntp_time_offset(ntp_server:tuple[str, ...])->int:
     for server in ntp_server:
         try:
             logger.debug(f"getting ntp time offset with: {server}")
             c = ntplib.NTPClient()
             response = c.request(server, version=3, timeout=2)
-            logger.debug(f"ntp time offset: {response.offset}")
+            logger.info(f"ntp time offset: {response.offset}")
             return response.offset
 
         except Exception as e:
             logger.warning(f"failed to get NTP time: {e} server: {server}")
+    raise NTPQueryError(list(ntp_server))
 
-    return None
 
-def check_and_sync(ntp_server:tuple[str], thresh:float)->bool:
-    '''
-    Check the system time against NTP servers and synchronize the system
-    clock if the measured offset exceeds `thresh` seconds. Returns `True`
-    if time is within threshold or synchronization succeeded, `False`
-    otherwise.
-    '''
-    try:
-        res = service.start_time_service()
-        if res is False:
-            logger.warning("failed to start time service")
-            return False
-        
-        offset = get_ntp_time_offset(ntp_server)
-        if offset is None:
-            logger.warning("failed to get ntp offset")
-            return False
-        
-        if abs(offset) > thresh:
-            logger.info(f"offset {offset:.3f}s exceeds threshold {thresh}s. syncing...")
-            res = service.sync_time()
-            return res
-        else:
-            return True
-    except Exception as e:
-        logger.critical(f"unexpected error: {e}")
-        raise UnexpectedError from e
+def check_and_sync(ntp_server:tuple[str, ...], thresh:float, auto_start:bool)->None:
+    if auto_start:
+        service.start_time_service()
+
+    offset = get_ntp_time_offset(ntp_server)
+
+    if abs(offset) > thresh:
+        logger.info(f"offset {offset:.3f}s exceeds threshold {thresh}s. syncing...")
+        service.sync_time()
+
+    else:
+        logger.debug(f"offset {offset:.3f}s within threshold {thresh}s. skip sync")
 
 # make it simple because in our case we only need one process at a time 
-def check_and_sync_thread(ntp_server:tuple[str], thresh:float, cycle:float)->tuple[threading.Thread, threading.Event]:
-    '''
-    Launch and return a background thread that periodically calls
-    `check_and_sync(ntp_server, thresh)` every `cycle` seconds. Returns a
-    `(thread, event)` tuple; set the returned `event` to stop the loop.
-    '''
+def check_and_sync_thread(ntp_server:tuple[str, ...], thresh:float, cycle:float, auto_start:bool)->tuple[threading.Thread, threading.Event]:
     event = threading.Event()
     def func():
         while not event.is_set():
             try:
-                check_and_sync(ntp_server, thresh)
+                check_and_sync(ntp_server, thresh, auto_start)
                 event.wait(timeout=cycle)
-            except:
-                pass
+            #TODO: except error service not start
+            except TimeServicePermissionError as e:
+                logger.critical(f"Permissions failure in background sync: {e}")
+                break
+
+            except Exception as e:
+                logger.critical(f"time sync falied: {e}")
+
     thread = threading.Thread(target=func, daemon=True)
     thread.start()
     return thread, event
-

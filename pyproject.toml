@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ntp-anchor"
-version = "0.1.0"
+version = "0.2.0"
 description = "Cross-platform NTP time synchronization package"
 readme = "README.md"
 
@@ -16,8 +16,20 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
-    "pytest>=9.0.2"
+    "pytest>=9.0.2",
+    "pytest-mock"
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+minversion = "9.0.2"
+addopts = "-ra -q"
+testpaths = [
+    "tests"
+]
+markers = [
+    "unit: Core isolated unit tests using mocks.",
+    "integration: Tests that interact with the live Windows OS or network dependencies."
+]

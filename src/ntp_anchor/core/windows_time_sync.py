@@ -1,53 +1,68 @@
 import subprocess
 import logging
-
+from .exceptions import *
+from .base_time_sync import BaseTimeSync
 logger = logging.getLogger(__name__)
 
-class WindowsTimeSync:
-    # ---------- Windows Time Service ----------
+class WindowsTimeSync(BaseTimeSync):
     @staticmethod
-    def start_time_service()->bool:
+    def start_time_service()->None:
         '''
         Ensure the Windows `w32time` service is running. Attempts to start the
-        service if it is not running. Returns `True` on success, `False` on
-        error.
+        service if it is not running. Raises SubprocessError on failures.
         '''
-        try:
-            logger.debug("checking w32time")
-            status = subprocess.run(
-                ["sc", "query", "w32time"],
-                capture_output=True, text=True
-            )
-            logger.debug(f"w32time status: {status.stdout}")
+        logger.debug("checking w32time")
+        status = subprocess.run(
+            ["sc.exe", "query", "w32time"],
+            capture_output=True, text=True
+        )
+        if status.returncode != 0:
+            raise TimeServiceCommandError(status)
+        
+        logger.debug(f"query w32time stdout: {status.stdout}")
 
-            if "RUNNING" not in status.stdout:
-                logger.debug("starting windows time service")
-                res = subprocess.run(["sc", "start", "w32time"], capture_output=True, text=True)
-                logger.debug(f"start windows time service result: {res}")
-            return True
-        except Exception as e:
-            logger.warning(f"could not check/start service: {e}")
-            return False
+        # service statuse
+        # STOPPED
+        # START_PENDING
+        # STOP_PENDING
+        # RUNNING
+        # CONTINUE_PENDING (ignore case: not pausable)
+        # PAUSE_PENDING (ignore case: not pausable)
+        # PAUSED (ignore case: not pausable)
+        if "RUNNING" not in status.stdout:
+            logger.debug("starting windows time service")
+            status = subprocess.run(["sc.exe", "start", "w32time"], capture_output=True, text=True)
+            # error code 1056 for ERROR_SERVICE_ALREADY_RUNNING
+            if status.returncode != 0 and status.returncode != 1056:
+                if status.returncode == 5:
+                    raise TimeServicePermissionError(status)
+                raise TimeServiceCommandError(status)
+            
+            logger.debug(f"start w32time stdout: {status.stdout}")
 
-    # need admin
     @staticmethod
-    def sync_time()->bool:
+    def sync_time()->None:
         '''
         Trigger a Windows time resynchronization via `w32tm /resync`.
-        Requires administrative privileges. Returns `True` when the command
-        reports success, otherwise `False`.
+        Requires administrative privileges. Raises SubprocessError on failure or 
+        silent NTP failures.
         '''
-        try:
-            logger.debug("start time sync")
-            result = subprocess.run(["w32tm", "/resync"], capture_output=True, text=True)
-            if result.returncode == 0 and ("成功" in result.stdout or "success" in result.stdout.lower()):
-                logger.info(f"time sync success: {result.stdout}")
-                return True
-            else:
-                logger.warning(f"time sync failed: {result.stderr.strip()}")
-                return False
+
+        logger.debug("start time sync")
+        # need admin
+        status = subprocess.run(["w32tm", "/resync"], capture_output=True, text=True)
+        if status.returncode != 0:
+            if status.returncode == 5 or status.returncode == 2147942405:
+                raise TimeServicePermissionError(status)
             
-        except Exception as e:
-            # TODO: rise permission error when no permission
-            logger.warning(f"error during sync: {e}")
-            return False
+            raise TimeServiceCommandError(status)
+        
+        if "2147942405" in status.stdout or "0x80070005" in status.stdout:
+            raise TimeServicePermissionError(status)
+        
+        if "did not resync" in status.stdout.lower() or "no time data was available" in status.stdout.lower():
+            raise TimeServiceCommandError(status)
+        
+        logger.info(f"time sync success: {status.stdout}")
+            
+#TODO: add zn support
