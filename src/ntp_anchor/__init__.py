@@ -1,17 +1,52 @@
+"""Cross-platform NTP measurement and managed synchronization."""
+
+from . import core
 from .core import (
-    start_time_service, 
-    sync_time,
-    get_ntp_time_offset,
+    CheckStatus,
+    DEFAULT_NTP_SERVERS,
+    LifecycleState,
+    NTPMeasurement,
+    NTPQueryResult,
+    NTPRejection,
+    SyncConfig,
+    SyncManager,
+    SyncResult,
+    WorkerSnapshot,
+    WorkerDiagnostics,
     check_and_sync,
-    check_and_sync_thread
+    check_and_sync_thread,
+    configure_default_manager,
+    create_sync_manager,
+    exceptions,
+    get_default_manager,
+    get_ntp_time_offset,
+    measure_ntp,
+    start_time_service,
+    sync_time,
 )
-from .core import exceptions
+
 
 __all__ = [
-    "start_time_service", 
-    "sync_time", 
-    "get_ntp_time_offset", 
+    "CheckStatus",
+    "DEFAULT_NTP_SERVERS",
+    "LifecycleState",
+    "NTPMeasurement",
+    "NTPQueryResult",
+    "NTPRejection",
+    "SyncConfig",
+    "SyncManager",
+    "SyncResult",
+    "WorkerSnapshot",
+    "WorkerDiagnostics",
     "check_and_sync",
     "check_and_sync_thread",
-    "exceptions"
+    "configure_default_manager",
+    "core",
+    "create_sync_manager",
+    "exceptions",
+    "get_default_manager",
+    "get_ntp_time_offset",
+    "measure_ntp",
+    "start_time_service",
+    "sync_time",
 ]

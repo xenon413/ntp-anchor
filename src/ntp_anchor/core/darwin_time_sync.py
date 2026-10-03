@@ -1,73 +1,186 @@
-import subprocess
-import shutil
+"""macOS time-service backend with explicit provider fallback."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
 import logging
-from .exceptions import *
-from .base_time_sync import BaseTimeSync
+
+from .base_time_sync import BaseTimeSync, normalize_sync_servers
+from .command_runner import CommandRunner
+from .exceptions import (
+    NTPAnchorError,
+    TimeServiceCommandError,
+    TimeServicePermissionError,
+    TimeServiceTimeoutError,
+    TimeServiceUnavailableError,
+)
+
 
 logger = logging.getLogger(__name__)
 
 
 class DarwinTimeSync(BaseTimeSync):
-    @staticmethod
-    def _command_exists(cmd: str) -> bool:
-        return shutil.which(cmd) is not None
+    """Operate supported macOS network-time facilities."""
+
+    def __init__(self, runner: CommandRunner | None = None) -> None:
+        self.runner = runner or CommandRunner()
+
+    def _command_exists(self, command: str) -> bool:
+        return self.runner.is_available(command)
+
+    def prepare_time_sync(self, servers: Sequence[str]) -> None:
+        """Verify a provider that can use explicit authorities.
+
+        This deliberately avoids starting ``timed`` with its existing source
+        configuration before the measured inlier set has been applied.
+        """
+
+        normalize_sync_servers(servers)
+        if any(
+            self._command_exists(command)
+            for command in ("sntp", "ntpdate", "chronyd", "systemsetup")
+        ):
+            return
+        raise TimeServiceUnavailableError(
+            "No macOS synchronization tool accepts explicit NTP authorities."
+        )
+
+    def start_time_service(self) -> None:
+        """Enable network time or raise a typed failure."""
+
+        failures: list[NTPAnchorError] = []
+        attempted = False
+
+        if self._command_exists("systemsetup"):
+            attempted = True
+            try:
+                self.runner.run(
+                    "systemsetup",
+                    ("-setusingnetworktime", "on"),
+                )
+            except (TimeServicePermissionError, TimeServiceTimeoutError):
+                raise
+            except NTPAnchorError as error:
+                failures.append(error)
+            else:
+                logger.debug("enabled macOS network time through systemsetup")
+                return
+
+        if self._command_exists("launchctl"):
+            attempted = True
+            try:
+                self.runner.run(
+                    "launchctl",
+                    ("kickstart", "-k", "system/com.apple.timed"),
+                )
+            except (TimeServicePermissionError, TimeServiceTimeoutError):
+                raise
+            except NTPAnchorError as error:
+                failures.append(error)
+            else:
+                logger.debug("started the macOS timed service through launchctl")
+                return
+
+        self._raise_provider_failure(
+            "No supported macOS network-time service is available.",
+            failures,
+            attempted=attempted,
+        )
+
+    def sync_time(self, servers: Sequence[str] | None = None) -> None:
+        """Request synchronization against an explicitly selected authority."""
+
+        selected_servers = normalize_sync_servers(servers)
+        failures: list[NTPAnchorError] = []
+        attempted = False
+
+        if self._command_exists("sntp"):
+            attempted = True
+            for server in selected_servers:
+                try:
+                    self.runner.run("sntp", ("-sS", server))
+                except (TimeServicePermissionError, TimeServiceTimeoutError):
+                    raise
+                except NTPAnchorError as error:
+                    failures.append(error)
+                    continue
+                logger.info("macOS time synchronization via sntp was requested")
+                return
+
+        if self._command_exists("ntpdate"):
+            attempted = True
+            try:
+                self.runner.run("ntpdate", ("-u", *selected_servers))
+            except (TimeServicePermissionError, TimeServiceTimeoutError):
+                raise
+            except NTPAnchorError as error:
+                failures.append(error)
+            else:
+                logger.info("macOS time synchronization via ntpdate was requested")
+                return
+
+        if self._command_exists("chronyd"):
+            attempted = True
+            directives = tuple(f"server {server} iburst" for server in selected_servers)
+            arguments = ["-q"]
+            if self.runner.timeout >= 2.0:
+                arguments.extend(("-t", str(max(1, int(self.runner.timeout) - 1))))
+            arguments.extend(directives)
+            try:
+                self.runner.run("chronyd", tuple(arguments))
+            except (TimeServicePermissionError, TimeServiceTimeoutError):
+                raise
+            except NTPAnchorError as error:
+                failures.append(error)
+            else:
+                logger.info("macOS time synchronization via chronyd was requested")
+                return
+
+        if self._command_exists("systemsetup"):
+            attempted = True
+            try:
+                # macOS supports one configured network-time authority through
+                # systemsetup. The first server is selected deterministically;
+                # post-sync measurement decides whether convergence occurred.
+                self.runner.run(
+                    "systemsetup",
+                    ("-setnetworktimeserver", selected_servers[0]),
+                )
+                self.runner.run(
+                    "systemsetup",
+                    ("-setusingnetworktime", "on"),
+                )
+            except (TimeServicePermissionError, TimeServiceTimeoutError):
+                raise
+            except NTPAnchorError as error:
+                failures.append(error)
+            else:
+                logger.info("macOS network-time synchronization was requested")
+                return
+
+        self._raise_provider_failure(
+            "No macOS synchronization tool accepted the configured NTP authorities.",
+            failures,
+            attempted=attempted,
+        )
 
     @staticmethod
-    def start_time_service() -> None:
-        '''
-        Enable network time on macOS using `systemsetup` when available.
+    def _raise_provider_failure(
+        message: str,
+        failures: Sequence[NTPAnchorError],
+        *,
+        attempted: bool,
+    ) -> None:
+        for error_type in (
+            TimeServicePermissionError,
+            TimeServiceTimeoutError,
+            TimeServiceCommandError,
+            TimeServiceUnavailableError,
+        ):
+            for error in failures:
+                if isinstance(error, error_type):
+                    raise error
 
-        Raises:
-            SubprocessError: when the underlying `systemsetup` command fails.
-            UnexpectedError: for other unexpected failures.
-        '''
-        try:
-            logger.debug("checking darwin time service")
-            if DarwinTimeSync._command_exists("systemsetup"):
-                status = subprocess.run(["systemsetup", "-setusingnetworktime", "on"], capture_output=True, text=True)
-                if status.returncode != 0:
-                    raise TimeServiceCommandError(status)
-                logger.debug("enabled network time via systemsetup")
-                return None
-
-            logger.warning("systemsetup not found on darwin; cannot enable network time")
-            return None
-        except TimeServiceCommandError:
-            raise
-        except Exception as e:
-            logger.error(f"could not enable network time on darwin: {e}")
-            raise UnexpectedError(str(e))
-
-    @staticmethod
-    def sync_time() -> None:
-        '''
-        Trigger an immediate time synchronization on macOS. Tries `sntp -sS`
-        first, then falls back to `ntpd -q -g` if available.
-
-        Raises:
-            SubprocessError: when an invoked sync command fails.
-            UnexpectedError: when no suitable sync tool is available.
-        '''
-        try:
-            logger.debug("start darwin time sync")
-            if DarwinTimeSync._command_exists("sntp"):
-                status = subprocess.run(["sntp", "-sS", "pool.ntp.org"], capture_output=True, text=True)
-                if status.returncode != 0:
-                    raise TimeServiceCommandError(status)
-                logger.info("time sync via sntp succeeded")
-                return None
-
-            if DarwinTimeSync._command_exists("ntpd"):
-                status = subprocess.run(["ntpd", "-q", "-g"], capture_output=True, text=True)
-                if status.returncode != 0:
-                    raise TimeServiceCommandError(status)
-                logger.info("time sync via ntpd succeeded")
-                return None
-
-            logger.warning("no known immediate sync tool available on darwin")
-            raise UnexpectedError("no sync tool available")
-        except TimeServiceCommandError:
-            raise
-        except Exception as e:
-            logger.error(f"error during darwin time sync: {e}")
-            raise UnexpectedError(str(e))
+        if attempted and failures:
+            raise failures[-1]
+        raise TimeServiceUnavailableError(message)

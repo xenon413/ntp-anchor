@@ -1,232 +1,197 @@
-from ntp_anchor.core.windows_time_sync import WindowsTimeSync
-import ntp_anchor
+import subprocess
 from unittest.mock import MagicMock, call
+
 import pytest
 
-# for type hint
-from pytest import MonkeyPatch 
-from pytest_mock import MockerFixture
+from ntp_anchor.core.exceptions import (
+    TimeServiceCommandError,
+    TimeServicePermissionError,
+)
+from ntp_anchor.core.windows_time_sync import WindowsTimeSync
 
-# use for test if monkeypatch actually does it's job right
-from ntp_anchor.core.linux_time_sync import LinuxTimeSync
+
+def _status(
+    args: list[str],
+    *,
+    stdout: str = "",
+    stderr: str = "",
+    returncode: int = 0,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        args=args,
+        returncode=returncode,
+        stdout=stdout,
+        stderr=stderr,
+    )
 
 
-# ---- test start time service----
+def _service_state(state: int, label: str) -> subprocess.CompletedProcess[str]:
+    return _status(
+        ["sc.exe", "query", "w32time"],
+        stdout=(
+            "SERVICE_NAME: w32time\n"
+            "        TYPE               : 30  WIN32\n"
+            f"        STATE              : {state}  {label}\n"
+            "        WIN32_EXIT_CODE    : 0  (0x0)\n"
+        ),
+    )
+
+
+def _backend(runner: MagicMock) -> WindowsTimeSync:
+    return WindowsTimeSync(
+        runner,
+        service_start_timeout=1.0,
+        poll_interval=0.01,
+        monotonic=lambda: 0.0,
+        sleep=lambda _: None,
+    )
+
+
 @pytest.mark.unit
-def test_start_time_service_running(mocker:MockerFixture, monkeypatch:MonkeyPatch):
-    mock_run = mocker.patch("subprocess.run")
-    monkeypatch.setattr(ntp_anchor.core.core_logic, "OS", "windows")
-    monkeypatch.setattr(ntp_anchor.core, "service", WindowsTimeSync)
+def test_start_time_service_running() -> None:
+    runner = MagicMock()
+    runner.run.return_value = _service_state(4, "RUNNING")
 
-    query_mock = MagicMock(
-        stdout=(
-            "\n"
-            "SERVICE_NAME: w32time\n"
-            "        TYPE               : 30  WIN32\n"
-            "        STATE              : 4  RUNNING\n"
-            "                                (STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)\n"
-            "        WIN32_EXIT_CODE    : 0  (0x0)\n"
-            "        SERVICE_EXIT_CODE  : 0  (0x0)\n"
-            "        CHECKPOINT         : 0x0\n"
-            "        WAIT_HINT          : 0x0\n"
-        ),
-        args=['sc.exe', 'query', 'w32time'],
-        returncode=0,
-        stderr="",
+    _backend(runner).start_time_service()
+
+    runner.run.assert_called_once_with(
+        "sc.exe",
+        ("query", "w32time"),
+        timeout=1.0,
     )
 
-    mock_run.return_value = query_mock
-    ntp_anchor.start_time_service()
-
-    mock_run.assert_called_once_with(
-        ["sc.exe", "query", "w32time"], 
-        capture_output=True, 
-        text=True
-    )
 
 @pytest.mark.unit
-def test_start_time_service_stopped_admin(mocker:MockerFixture, monkeypatch:MonkeyPatch):
-    mock_run = mocker.patch("subprocess.run")
-    monkeypatch.setattr(ntp_anchor.core.core_logic, "OS", "windows")
-    monkeypatch.setattr(ntp_anchor.core, "service", WindowsTimeSync)
-
-    query_mock = MagicMock(
-        stdout=(
-            "\n"
-            "SERVICE_NAME: w32time\n"
-            "        TYPE               : 30  WIN32\n"
-            "        STATE              : 1  STOPPED\n"
-            "                                (STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)\n"
-            "        WIN32_EXIT_CODE    : 0  (0x0)\n"
-            "        SERVICE_EXIT_CODE  : 0  (0x0)\n"
-            "        CHECKPOINT         : 0x0\n"
-            "        WAIT_HINT          : 0x0\n"
-        ),
-        args=["sc.exe", "query", "w32time"],
-        returncode=0,
-        stderr="",
-    )
-
-    start_mock = MagicMock(
-        stdout=(
-            "\n"
-            "SERVICE_NAME: w32time\n"
-            "        TYPE               : 30  WIN32\n"
-            "        STATE              : 2  START_PENDING\n"
-            "                                (NOT_STOPPABLE, NOT_PAUSABLE, IGNORES_SHUTDOWN)\n"
-            "        WIN32_EXIT_CODE    : 0  (0x0)\n"
-            "        SERVICE_EXIT_CODE  : 0  (0x0)\n"
-            "        CHECKPOINT         : 0x0\n"
-            "        WAIT_HINT          : 0x7d0\n" # 2s
-            "        PID                : 1560\n"
-            "        FLAGS              :\n"
-        ),
-        args=["sc.exe", "start", "w32time"],
-        returncode=0,
-        stderr="",
-    )
-
-    mock_run.side_effect = [query_mock, start_mock]
-
-    ntp_anchor.start_time_service()
-
-    expected_sequence = [
-        call(["sc.exe", "query", "w32time"], capture_output=True, text=True),
-        call(["sc.exe", "start", "w32time"], capture_output=True, text=True)
+def test_start_time_service_stopped_starts_and_polls_until_running() -> None:
+    runner = MagicMock()
+    runner.run.side_effect = [
+        _service_state(1, "STOPPED"),
+        _status(["sc.exe", "start", "w32time"]),
+        _service_state(2, "START_PENDING"),
+        _service_state(4, "RUNNING"),
     ]
 
-    assert mock_run.call_count == 2
-    mock_run.assert_has_calls(expected_sequence, any_order=False)
+    _backend(runner).start_time_service()
 
-@pytest.mark.unit
-def test_start_time_service_stopped_no_admin(mocker:MockerFixture, monkeypatch:MonkeyPatch):
-    mock_run = mocker.patch("subprocess.run")
-    monkeypatch.setattr(ntp_anchor.core.core_logic, "OS", "windows")
-    monkeypatch.setattr(ntp_anchor.core, "service", WindowsTimeSync)
-
-    query_mock = MagicMock(
-        stdout=(
-            "\n"
-            "SERVICE_NAME: w32time\n"
-            "        TYPE               : 30  WIN32\n"
-            "        STATE              : 1  STOPPED\n"
-            "                                (STOPPABLE, NOT_PAUSABLE, ACCEPTS_SHUTDOWN)\n"
-            "        WIN32_EXIT_CODE    : 0  (0x0)\n"
-            "        SERVICE_EXIT_CODE  : 0  (0x0)\n"
-            "        CHECKPOINT         : 0x0\n"
-            "        WAIT_HINT          : 0x0\n"
-        ),
-        args=["sc.exe", "query", "w32time"],
-        returncode=0,
-        stderr="",
+    assert runner.run.call_count == 4
+    runner.run.assert_has_calls(
+        [
+            call("sc.exe", ("query", "w32time"), timeout=1.0),
+            call(
+                "sc.exe",
+                ("start", "w32time"),
+                timeout=1.0,
+                allowed_returncodes=(0, 1056),
+                permission_returncodes=(5,),
+            ),
+            call("sc.exe", ("query", "w32time"), timeout=1.0),
+            call("sc.exe", ("query", "w32time"), timeout=1.0),
+        ]
     )
 
-    start_mock = MagicMock(
-        stdout=(
-            "[SC] StartService: OpenService FAILED 5:\n"
-            "\n"
-            "Access is denied.\n"
-            "\n"
-        ),
-        args=["sc.exe", "start", "w32time"],
+
+@pytest.mark.unit
+def test_start_time_service_permission_error_is_preserved() -> None:
+    runner = MagicMock()
+    permission_error = TimeServicePermissionError(
+        command=("sc.exe", "start", "w32time"),
         returncode=5,
-        stderr="",
     )
-    
-    mock_run.side_effect = [query_mock, start_mock]
-    with pytest.raises(ntp_anchor.exceptions.TimeServicePermissionError) as exc_info:
-        ntp_anchor.start_time_service()
-
-    assert f"Access Denied for sc.exe start w32time. Please ensure you are running as an Administrator" in str(exc_info.value)
-
-    expected_sequence = [
-        call(["sc.exe", "query", "w32time"], capture_output=True, text=True),
-        call(["sc.exe", "start", "w32time"], capture_output=True, text=True)
+    runner.run.side_effect = [
+        _service_state(1, "STOPPED"),
+        permission_error,
     ]
 
-    assert mock_run.call_count == 2
-    mock_run.assert_has_calls(expected_sequence, any_order=False)
+    with pytest.raises(TimeServicePermissionError) as caught:
+        _backend(runner).start_time_service()
 
+    assert "Access Denied for sc.exe start w32time" in str(caught.value)
 
-# TODO: 
-# test edge case when hits start/stop pending and 
-
-# ---- test time sync ----
-@pytest.mark.unit
-def test_sync_time_admin(mocker:MockerFixture, monkeypatch:MonkeyPatch):
-    mock_run = mocker.patch("subprocess.run")
-    monkeypatch.setattr(ntp_anchor.core.core_logic, "OS", "windows")
-    monkeypatch.setattr(ntp_anchor.core, "service", WindowsTimeSync)
-    
-    sync_mock = MagicMock(
-        stdout=(
-            "Sending resync command to local computer\n"
-            "The command completed successfully.\n"
-        ),
-        args=['w32tm', '/resync'],
-        returncode=0,
-        stderr=""
-    )
-
-    mock_run.return_value = sync_mock
-    ntp_anchor.sync_time()
-    mock_run.assert_called_once_with(
-        ['w32tm', '/resync'], 
-        capture_output=True, 
-        text=True
-    )
 
 @pytest.mark.unit
-def test_sync_time_admin_no_wifi(mocker:MockerFixture, monkeypatch:MonkeyPatch):
-    mock_run = mocker.patch("subprocess.run")
-    monkeypatch.setattr(ntp_anchor.core.core_logic, "OS", "windows")
-    monkeypatch.setattr(ntp_anchor.core, "service", WindowsTimeSync)
+def test_prepare_time_sync_starts_service_and_configures_consensus_peers() -> None:
+    runner = MagicMock()
+    runner.run.side_effect = [
+        _service_state(4, "RUNNING"),
+        _status(["w32tm.exe", "/config"]),
+    ]
 
-    sync_mock = MagicMock(
-        stdout=(
-            "Sending resync command to local computer\n"
-            "The computer did not resync because no time data was available.\n"
-        ),
-        args=['w32tm', '/resync'],
-        returncode=0,
-        stderr=""
+    _backend(runner).prepare_time_sync(("a.example.com", "b.example.com"))
+
+    runner.run.assert_has_calls(
+        [
+            call("sc.exe", ("query", "w32time"), timeout=1.0),
+            call(
+                "w32tm.exe",
+                (
+                    "/config",
+                    "/manualpeerlist:a.example.com,0x8 b.example.com,0x8",
+                    "/syncfromflags:manual",
+                    "/update",
+                ),
+                permission_returncodes=(5, 0x80070005, -2147024891),
+            ),
+        ]
     )
 
-    mock_run.return_value = sync_mock
-    with pytest.raises(ntp_anchor.exceptions.TimeServiceCommandError):
-        ntp_anchor.sync_time()
-    
-    mock_run.assert_called_once_with(
-        ['w32tm', '/resync'], 
-        capture_output=True, 
-        text=True
-    )
 
 @pytest.mark.unit
-def test_sync_time_no_admin(mocker:MockerFixture, monkeypatch:MonkeyPatch):
-    mock_run = mocker.patch("subprocess.run")
-    monkeypatch.setattr(ntp_anchor.core.core_logic, "OS", "windows")
-    monkeypatch.setattr(ntp_anchor.core, "service", WindowsTimeSync)
-    sync_mock = MagicMock(
-        stdout=(
-            "Sending resync command to local computer\n"
-            "The following error occurred: Access is denied. (0x80070005)\n"
+def test_sync_time_configures_selected_peers_before_resync() -> None:
+    runner = MagicMock()
+    runner.run.side_effect = [
+        _status(["w32tm.exe", "/config"]),
+        _status(
+            ["w32tm.exe", "/resync"],
+            stdout="The command completed successfully.\n",
         ),
-        args=['w32tm', '/resync'],
-        returncode=2147942405,
-        stderr=""
-    )
-    mock_run.return_value = sync_mock
-    with pytest.raises(ntp_anchor.exceptions.TimeServicePermissionError) as exc_info:
-        ntp_anchor.sync_time()
+    ]
+    backend = _backend(runner)
 
-    assert f"Access Denied for w32tm /resync. Please ensure you are running as an Administrator" in str(exc_info.value)
-    
-    mock_run.assert_called_once_with(
-        ['w32tm', '/resync'], 
-        capture_output=True, 
-        text=True
+    backend.sync_time(("time.example.com", "time2.example.com"))
+
+    runner.run.assert_has_calls(
+        [
+            call(
+                "w32tm.exe",
+                (
+                    "/config",
+                    "/manualpeerlist:time.example.com,0x8 time2.example.com,0x8",
+                    "/syncfromflags:manual",
+                    "/update",
+                ),
+                permission_returncodes=(5, 0x80070005, -2147024891),
+            ),
+            call(
+                "w32tm.exe",
+                ("/resync",),
+                permission_returncodes=(5, 0x80070005, -2147024891),
+            ),
+        ]
     )
 
-# TODO:
-# test sync when win32time is stopped
+
+@pytest.mark.unit
+def test_sync_time_detects_zero_exit_no_time_data_failure() -> None:
+    runner = MagicMock()
+    runner.run.return_value = _status(
+        ["w32tm.exe", "/resync"],
+        stdout="The computer did not resync because no time data was available.\n",
+    )
+
+    with pytest.raises(TimeServiceCommandError):
+        _backend(runner).sync_time()
+
+
+@pytest.mark.unit
+def test_sync_time_permission_error_is_preserved() -> None:
+    runner = MagicMock()
+    permission_error = TimeServicePermissionError(
+        command=("w32tm.exe", "/resync"),
+        returncode=0x80070005,
+    )
+    runner.run.side_effect = permission_error
+
+    with pytest.raises(TimeServicePermissionError) as caught:
+        _backend(runner).sync_time()
+
+    assert "Access Denied for w32tm.exe /resync" in str(caught.value)

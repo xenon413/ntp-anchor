@@ -1,97 +1,191 @@
-import subprocess
-import shutil
+"""Linux time-service backend with explicit provider fallback."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
 import logging
-from .exceptions import *
-from .base_time_sync import BaseTimeSync
+
+from .base_time_sync import BaseTimeSync, normalize_sync_servers
+from .command_runner import CommandRunner
+from .exceptions import (
+    NTPAnchorError,
+    TimeServiceCommandError,
+    TimeServicePermissionError,
+    TimeServiceTimeoutError,
+    TimeServiceUnavailableError,
+)
+
 
 logger = logging.getLogger(__name__)
 
 
 class LinuxTimeSync(BaseTimeSync):
-    @staticmethod
-    def _command_exists(cmd: str) -> bool:
-        return shutil.which(cmd) is not None
+    """Operate supported Linux time-service providers."""
+
+    _SYSTEMD_SERVICES = (
+        "systemd-timesyncd.service",
+        "chronyd.service",
+        "chrony.service",
+        "ntp.service",
+        "ntpd.service",
+    )
+    _SYSV_SERVICES = ("chronyd", "chrony", "ntp", "ntpd")
+
+    def __init__(self, runner: CommandRunner | None = None) -> None:
+        self.runner = runner or CommandRunner()
+
+    def _command_exists(self, command: str) -> bool:
+        return self.runner.is_available(command)
+
+    def prepare_time_sync(self, servers: Sequence[str]) -> None:
+        """Verify an authority-aware one-shot provider without starting a daemon."""
+
+        normalize_sync_servers(servers)
+        if any(
+            self._command_exists(command)
+            for command in ("ntpdate", "sntp", "chronyd")
+        ):
+            return
+        raise TimeServiceUnavailableError(
+            "No Linux synchronization tool accepts explicit NTP authorities."
+        )
+
+    def start_time_service(self) -> None:
+        """Enable the first Linux time provider that starts successfully."""
+
+        failures: list[NTPAnchorError] = []
+        attempted = False
+
+        if self._command_exists("timedatectl"):
+            attempted = True
+            try:
+                self.runner.run("timedatectl", ("set-ntp", "true"))
+            except (TimeServicePermissionError, TimeServiceTimeoutError):
+                raise
+            except NTPAnchorError as error:
+                failures.append(error)
+            else:
+                logger.debug("enabled the Linux NTP provider through timedatectl")
+                return
+
+        if self._command_exists("systemctl"):
+            attempted = True
+            for service in self._SYSTEMD_SERVICES:
+                try:
+                    self.runner.run("systemctl", ("start", service))
+                except (TimeServicePermissionError, TimeServiceTimeoutError):
+                    raise
+                except NTPAnchorError as error:
+                    failures.append(error)
+                    continue
+                logger.debug("started Linux time provider %s", service)
+                return
+
+        if self._command_exists("service"):
+            attempted = True
+            for service in self._SYSV_SERVICES:
+                try:
+                    self.runner.run("service", (service, "start"))
+                except (TimeServicePermissionError, TimeServiceTimeoutError):
+                    raise
+                except NTPAnchorError as error:
+                    failures.append(error)
+                    continue
+                logger.debug("started Linux time provider %s", service)
+                return
+
+        self._raise_provider_failure(
+            "No supported Linux time service could be started.",
+            failures,
+            attempted=attempted,
+        )
+
+    def sync_time(self, servers: Sequence[str] | None = None) -> None:
+        """Synchronize through a tool that accepts the selected authorities.
+
+        Provider-managed commands such as ``chronyc makestep`` and
+        ``timedatectl set-ntp`` deliberately are not used here: neither can
+        guarantee that it will correct against the same authorities measured
+        by the controller.
+        """
+
+        selected_servers = normalize_sync_servers(servers)
+        failures: list[NTPAnchorError] = []
+        attempted = False
+
+        if self._command_exists("ntpdate"):
+            attempted = True
+            try:
+                self.runner.run("ntpdate", ("-u", *selected_servers))
+            except (TimeServicePermissionError, TimeServiceTimeoutError):
+                raise
+            except NTPAnchorError as error:
+                failures.append(error)
+            else:
+                logger.info("Linux time synchronization via ntpdate was requested")
+                return
+
+        if self._command_exists("sntp"):
+            attempted = True
+            for server in selected_servers:
+                try:
+                    self.runner.run("sntp", ("-sS", server))
+                except (TimeServicePermissionError, TimeServiceTimeoutError):
+                    raise
+                except NTPAnchorError as error:
+                    failures.append(error)
+                    continue
+                logger.info("Linux time synchronization via sntp was requested")
+                return
+
+        if self._command_exists("chronyd"):
+            attempted = True
+            directives = tuple(f"server {server} iburst" for server in selected_servers)
+            arguments = ["-q"]
+            # Let chronyd finish and report before the runner's outer deadline.
+            # For very short runner deadlines, omit -t and rely on the runner.
+            if self.runner.timeout >= 2.0:
+                arguments.extend(("-t", str(max(1, int(self.runner.timeout) - 1))))
+            arguments.extend(directives)
+            try:
+                # chronyd accepts configuration directives as individual
+                # command-line arguments. -q corrects once and exits, while -t
+                # bounds its own source-acquisition loop in addition to the
+                # command runner's outer deadline.
+                self.runner.run("chronyd", tuple(arguments))
+            except (TimeServicePermissionError, TimeServiceTimeoutError):
+                raise
+            except NTPAnchorError as error:
+                failures.append(error)
+            else:
+                logger.info("Linux time synchronization via chronyd was requested")
+                return
+
+        self._raise_provider_failure(
+            "No Linux synchronization tool accepted the configured NTP authorities.",
+            failures,
+            attempted=attempted,
+        )
 
     @staticmethod
-    def start_time_service() -> None:
-        '''
-        Ensure a Linux time synchronization service is enabled and running.
-        Tries `timedatectl`/`systemd-timesyncd` first, then common daemons
-        such as `ntp` and `chronyd`.
+    def _raise_provider_failure(
+        message: str,
+        failures: Sequence[NTPAnchorError],
+        *,
+        attempted: bool,
+    ) -> None:
+        # Preserve actionable classifications after all eligible alternatives
+        # have been attempted. Permission and timeout failures take priority.
+        for error_type in (
+            TimeServicePermissionError,
+            TimeServiceTimeoutError,
+            TimeServiceCommandError,
+            TimeServiceUnavailableError,
+        ):
+            for error in failures:
+                if isinstance(error, error_type):
+                    raise error
 
-        Raises:
-            SubprocessError: when an invoked system command returns a failure.
-            UnexpectedError: for other unexpected failures.
-        '''
-        try:
-            logger.debug("checking linux time service")
-            if LinuxTimeSync._command_exists("timedatectl"):
-                status = subprocess.run(["timedatectl", "set-ntp", "true"], capture_output=True, text=True)
-                if status.returncode != 0:
-                    raise TimeServicePermissionError(status)
-
-                logger.debug("enabled timedatectl NTP")
-                if LinuxTimeSync._command_exists("systemctl"):
-                    status = subprocess.run(["systemctl", "start", "systemd-timesyncd"], capture_output=True, text=True)
-                    if status.returncode != 0:
-                        raise TimeServicePermissionError(status)
-
-                return None
-
-            if LinuxTimeSync._command_exists("systemctl"):
-                for svc in ("ntp", "chronyd"):
-                    status = subprocess.run(["systemctl", "start", svc], capture_output=True, text=True)
-                    if status.returncode != 0:
-                        raise TimeServicePermissionError(status)
-                return None
-
-            logger.warning("no known time service manager found on linux")
-            return None
-        except TimeServicePermissionError:
-            raise
-        except Exception as e:
-            logger.error(f"could not start linux time service: {e}")
-            raise UnexpectedError(str(e))
-
-    @staticmethod
-    def sync_time() -> None:
-        '''
-        Trigger an immediate time synchronization on Linux. Attempts the
-        following (in order): `ntpdate -u pool.ntp.org`, `chronyc makestep`,
-        then enabling NTP via `timedatectl`.
-
-        Raises:
-            SubprocessError: when an invoked command fails.
-            UnexpectedError: when no suitable sync tool is available or on
-                             other unexpected failures.
-        '''
-        try:
-            logger.debug("start linux time sync")
-            if LinuxTimeSync._command_exists("ntpdate"):
-                status = subprocess.run(["ntpdate", "-u", "pool.ntp.org"], capture_output=True, text=True)
-                if status.returncode != 0:
-                    raise TimeServicePermissionError(status)
-                logger.info("time sync via ntpdate succeeded")
-                return None
-
-            if LinuxTimeSync._command_exists("chronyc"):
-                status = subprocess.run(["chronyc", "makestep"], capture_output=True, text=True)
-                if status.returncode != 0:
-                    raise TimeServicePermissionError(status)
-                logger.info("time sync via chronyc succeeded")
-                return None
-
-            if LinuxTimeSync._command_exists("timedatectl"):
-                status = subprocess.run(["timedatectl", "set-ntp", "true"], capture_output=True, text=True)
-                if status.returncode != 0:
-                    raise TimeServicePermissionError(status)
-                logger.info("enabled timedatectl NTP")
-                return None
-
-            logger.warning("no known immediate sync tool available on linux")
-            raise UnexpectedError("no sync tool available")
-        except TimeServicePermissionError:
-            raise
-        except Exception as e:
-            logger.error(f"error during linux time sync: {e}")
-            raise UnexpectedError(str(e))
+        if attempted and failures:
+            raise failures[-1]
+        raise TimeServiceUnavailableError(message)
