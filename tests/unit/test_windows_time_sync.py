@@ -6,6 +6,7 @@ import pytest
 from ntp_anchor.core.exceptions import (
     TimeServiceCommandError,
     TimeServicePermissionError,
+    TimeServiceTimeoutError,
 )
 from ntp_anchor.core.windows_time_sync import WindowsTimeSync
 
@@ -195,3 +196,84 @@ def test_sync_time_permission_error_is_preserved() -> None:
         _backend(runner).sync_time()
 
     assert "Access Denied for w32tm.exe /resync" in str(caught.value)
+
+
+@pytest.mark.unit
+def test_start_time_service_pending_state_has_bounded_readiness_deadline() -> None:
+    runner = MagicMock(return_value=_service_state(2, "START_PENDING"))
+    runner.run.return_value = _service_state(2, "START_PENDING")
+    clock = iter((0.0, 0.0, 1.1))
+    backend = WindowsTimeSync(
+        runner,
+        service_start_timeout=1.0,
+        poll_interval=0.01,
+        monotonic=lambda: next(clock),
+        sleep=lambda _: None,
+    )
+
+    with pytest.raises(TimeServiceTimeoutError):
+        backend.start_time_service()
+
+    runner.run.assert_called_once_with(
+        "sc.exe",
+        ("query", "w32time"),
+        timeout=1.0,
+    )
+
+
+@pytest.mark.unit
+def test_paused_service_is_continued_then_polled_until_running() -> None:
+    runner = MagicMock()
+    runner.run.side_effect = [
+        _service_state(7, "PAUSED"),
+        _status(["sc.exe", "continue", "w32time"]),
+        _service_state(5, "CONTINUE_PENDING"),
+        _service_state(4, "RUNNING"),
+    ]
+
+    _backend(runner).start_time_service()
+
+    runner.run.assert_has_calls(
+        [
+            call("sc.exe", ("query", "w32time"), timeout=1.0),
+            call(
+                "sc.exe",
+                ("continue", "w32time"),
+                timeout=1.0,
+                allowed_returncodes=(0, 1056),
+                permission_returncodes=(5,),
+            ),
+            call("sc.exe", ("query", "w32time"), timeout=1.0),
+            call("sc.exe", ("query", "w32time"), timeout=1.0),
+        ]
+    )
+
+
+@pytest.mark.unit
+def test_numeric_state_parsing_does_not_require_english_labels() -> None:
+    runner = MagicMock()
+    runner.run.return_value = _status(
+        ["sc.exe", "query", "w32time"],
+        stdout=(
+            "NOM_SERVICE: w32time\n"
+            "        TIPO               : 30  WIN32\n"
+            "        ETAT              : 4  EN_COURS\n"
+            "        CODE_SORTIE_WIN32 : 0  (0x0)\n"
+        ),
+    )
+
+    _backend(runner).start_time_service()
+
+    runner.run.assert_called_once()
+
+
+@pytest.mark.unit
+def test_unparseable_service_status_is_a_command_failure() -> None:
+    runner = MagicMock()
+    runner.run.return_value = _status(
+        ["sc.exe", "query", "w32time"],
+        stdout="service state unavailable",
+    )
+
+    with pytest.raises(TimeServiceCommandError):
+        _backend(runner).start_time_service()

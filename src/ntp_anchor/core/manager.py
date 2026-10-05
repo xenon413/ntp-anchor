@@ -174,6 +174,7 @@ class SyncManager:
         with self._lifecycle_operation_lock:
             with self._condition:
                 if self._thread is not None and self._thread.is_alive():
+                    logger.debug("NTP sync worker start ignored; worker is already running")
                     return self.snapshot()
 
                 self._lifecycle = LifecycleState.STARTING
@@ -193,7 +194,13 @@ class SyncManager:
                     self._last_check_status = CheckStatus.WORKER_FAILED
                     self._last_error = self._safe_error(error)
                     self._consecutive_failures += 1
-                    raise WorkerStateError("failed to start the NTP sync worker") from error
+                    logger.warning(
+                        "NTP sync worker failed to start error_type=%s",
+                        type(error).__name__,
+                    )
+                    raise WorkerStateError(
+                        "failed to start the NTP sync worker"
+                    ) from error
 
                 self._lifecycle = LifecycleState.RUNNING
                 return self.snapshot()
@@ -208,6 +215,7 @@ class SyncManager:
                 if worker is None or not worker.is_alive():
                     self._thread = None
                     self._lifecycle = LifecycleState.STOPPED
+                    logger.debug("NTP sync worker stop ignored; worker is already stopped")
                     return self.snapshot()
 
                 self._lifecycle = LifecycleState.STOPPING
@@ -221,6 +229,10 @@ class SyncManager:
 
             with self._condition:
                 if worker.is_alive():
+                    logger.warning(
+                        "NTP sync worker did not stop before deadline timeout=%.3f",
+                        join_timeout,
+                    )
                     raise WorkerStopTimeoutError(join_timeout)
                 if self._thread is worker:
                     self._thread = None
@@ -231,19 +243,35 @@ class SyncManager:
         """Atomically update the period and wake a waiting worker."""
 
         with self._condition:
+            previous = self._config.cycle
             updated = self._config.with_cycle(seconds)
             self._config = updated
             self._cycle_generation += 1
             self._condition.notify_all()
-            return self.snapshot()
+            snapshot = self.snapshot()
+        logger.info(
+            "NTP sync cycle updated previous=%.6f current=%.6f running=%s",
+            previous,
+            snapshot.cycle,
+            snapshot.is_running,
+        )
+        return snapshot
 
     def set_thresh(self, seconds: float) -> WorkerSnapshot:
         """Atomically update the threshold used by the next policy decision."""
 
         with self._state_lock:
+            previous = self._config.thresh
             updated = self._config.with_thresh(seconds)
             self._config = updated
-            return self.snapshot()
+            snapshot = self.snapshot()
+        logger.info(
+            "NTP drift threshold updated previous=%.6f current=%.6f running=%s",
+            previous,
+            snapshot.thresh,
+            snapshot.is_running,
+        )
+        return snapshot
 
     def check_once(self) -> SyncResult:
         """Run one serialized check and return its structured success result."""
@@ -383,6 +411,11 @@ class SyncManager:
                 )
                 raise error
 
+            logger.info(
+                "clock correction requested offset_seconds=%.6f source_count=%d",
+                measurement.offset,
+                len(correction_servers),
+            )
             try:
                 backend = self._get_backend()
                 self._raise_if_stopping(stop_event, measurement.offset)
@@ -394,7 +427,11 @@ class SyncManager:
             except _CheckCancelled:
                 raise
             except Exception as error:
-                self._finish_failure(CheckStatus.SYNC_FAILED, error, offset=measurement.offset)
+                self._finish_failure(
+                    CheckStatus.SYNC_FAILED,
+                    error,
+                    offset=measurement.offset,
+                )
                 raise
 
             return self._verify_sync(measurement, operation_config, stop_event)
@@ -474,6 +511,7 @@ class SyncManager:
 
     def _worker_main(self, stop_event: threading.Event) -> None:
         fatal_error: BaseException | None = None
+        logger.info("NTP sync worker started")
         try:
             while not stop_event.is_set():
                 succeeded = False
@@ -515,6 +553,7 @@ class SyncManager:
                         self._lifecycle = LifecycleState.STOPPED
                     self._thread = None
                     self._condition.notify_all()
+            logger.info("NTP sync worker stopped")
 
     def _wait_for_cycle(self, completed_at: float, stop_event: threading.Event) -> None:
         with self._condition:
@@ -536,8 +575,15 @@ class SyncManager:
             exponent = min(failures - 1, 30)
             base = min(config.retry_max_delay, config.retry_base_delay * (2**exponent))
             random_value = min(1.0, max(0.0, float(self._random())))
-            multiplier = 1.0 - config.retry_jitter + (2.0 * config.retry_jitter * random_value)
+            multiplier = 1.0 - config.retry_jitter + (
+                2.0 * config.retry_jitter * random_value
+            )
             delay = min(config.retry_max_delay, base * multiplier)
+            logger.debug(
+                "NTP sync worker entering retry backoff failures=%d delay=%.6f",
+                failures,
+                delay,
+            )
             self._condition.wait_for(stop_event.is_set, timeout=delay)
 
     def _wait_between_verification_attempts(
@@ -581,7 +627,13 @@ class SyncManager:
             self._last_check_status = CheckStatus.CHECKING
             self._last_measured_offset = None
             self._last_error = None
-            return operation_config
+        logger.debug(
+            "NTP check started source_count=%d quorum=%d threshold=%.6f",
+            len(operation_config.servers),
+            operation_config.quorum,
+            operation_config.thresh,
+        )
+        return operation_config
 
     def _finish_success(
         self,
@@ -599,6 +651,12 @@ class SyncManager:
             self._last_measured_offset = offset
             self._last_error = None
             self._consecutive_failures = 0
+        log = logger.info if status is CheckStatus.SYNC_SUCCEEDED else logger.debug
+        log(
+            "NTP check completed status=%s offset_seconds=%.6f",
+            status.value,
+            offset,
+        )
         return checked_at
 
     def _finish_failure(

@@ -140,16 +140,25 @@ class NTPClient:
             queried_at=self._aware_utc_now(),
         )
 
-    def _validate(self, server: str, response: Any, config: SyncConfig) -> NTPMeasurement:
+    def _validate(
+        self,
+        server: str,
+        response: Any,
+        config: SyncConfig,
+    ) -> NTPMeasurement:
         offset = _finite(response, "offset")
         delay = _finite(response, "delay")
         root_delay = _finite(response, "root_delay")
         root_dispersion = _finite(response, "root_dispersion")
 
         if delay < 0.0 or delay > config.max_delay:
-            raise NTPResponseValidationError("NTP response delay exceeds the configured bound")
+            raise NTPResponseValidationError(
+                "NTP response delay exceeds the configured bound"
+            )
         if abs(root_delay) > config.max_delay:
-            raise NTPResponseValidationError("NTP response root delay exceeds the configured bound")
+            raise NTPResponseValidationError(
+                "NTP response root delay exceeds the configured bound"
+            )
         if root_dispersion < 0.0 or root_dispersion > config.max_dispersion:
             raise NTPResponseValidationError(
                 "NTP response root dispersion exceeds the configured bound"
@@ -157,7 +166,9 @@ class NTPClient:
 
         leap = _response_integer(response, "leap")
         if leap not in (0, 1, 2):
-            raise NTPResponseValidationError("NTP server reports an unsynchronized leap state")
+            raise NTPResponseValidationError(
+                "NTP server reports an unsynchronized leap state"
+            )
 
         stratum = _response_integer(response, "stratum")
         if not 1 <= stratum <= config.max_stratum:
@@ -165,7 +176,9 @@ class NTPClient:
 
         version = _response_integer(response, "version")
         if version != config.ntp_version:
-            raise NTPResponseValidationError("NTP response version does not match the request")
+            raise NTPResponseValidationError(
+                "NTP response version does not match the request"
+            )
 
         mode = _response_integer(response, "mode")
         if mode != 4:
@@ -181,18 +194,34 @@ class NTPClient:
         destination_timestamp = _finite(response, "dest_time")
 
         if reference_timestamp <= 0.0:
-            raise NTPResponseValidationError("NTP response reference timestamp is invalid")
-        if min(origin_timestamp, receive_timestamp, transmit_timestamp, destination_timestamp) <= 0.0:
-            raise NTPResponseValidationError("NTP response contains an invalid exchange timestamp")
+            raise NTPResponseValidationError(
+                "NTP response reference timestamp is invalid"
+            )
+        if (
+            min(
+                origin_timestamp,
+                receive_timestamp,
+                transmit_timestamp,
+                destination_timestamp,
+            )
+            <= 0.0
+        ):
+            raise NTPResponseValidationError(
+                "NTP response contains an invalid exchange timestamp"
+            )
         if transmit_timestamp < receive_timestamp:
-            raise NTPResponseValidationError("NTP server transmit time precedes receive time")
+            raise NTPResponseValidationError(
+                "NTP server transmit time precedes receive time"
+            )
         reference_age = transmit_timestamp - reference_timestamp
         if reference_age < 0.0 or reference_age > config.max_reference_age:
             raise NTPResponseValidationError(
                 "NTP response reference timestamp is stale or in the future"
             )
         if destination_timestamp < origin_timestamp:
-            raise NTPResponseValidationError("NTP response destination time precedes origin time")
+            raise NTPResponseValidationError(
+                "NTP response destination time precedes origin time"
+            )
 
         return NTPMeasurement(
             server=server,

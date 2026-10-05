@@ -3,6 +3,7 @@ import subprocess
 import pytest
 
 from ntp_anchor.core.exceptions import (
+    TimeServiceCommandError,
     TimeServicePermissionError,
     TimeServiceUnavailableError,
 )
@@ -82,3 +83,37 @@ def test_chronyd_inner_deadline_precedes_runner_deadline() -> None:
             ("-q", "-t", "9", "server time.example.com iburst"),
         )
     ]
+
+
+@pytest.mark.unit
+def test_command_failure_falls_back_to_next_authority_aware_provider() -> None:
+    class FallbackRunner(FakeRunner):
+        def run(self, command: str, arguments: tuple[str, ...] = (), **_: object):
+            self.calls.append((command, arguments))
+            if command == "ntpdate":
+                raise TimeServiceCommandError(command=(command,), returncode=1)
+            return subprocess.CompletedProcess(
+                args=[command, *arguments],
+                returncode=0,
+                stdout="",
+                stderr="",
+            )
+
+    runner = FallbackRunner({"ntpdate", "sntp"})
+
+    LinuxTimeSync(runner).sync_time(("time.example.com",))
+
+    assert runner.calls == [
+        ("ntpdate", ("-u", "time.example.com")),
+        ("sntp", ("-sS", "time.example.com")),
+    ]
+
+
+@pytest.mark.unit
+def test_no_eligible_provider_is_typed_unavailable() -> None:
+    runner = FakeRunner(set())
+
+    with pytest.raises(TimeServiceUnavailableError):
+        LinuxTimeSync(runner).sync_time(("time.example.com",))
+
+    assert runner.calls == []

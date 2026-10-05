@@ -5,6 +5,7 @@ import pytest
 
 from ntp_anchor.core.command_runner import CommandRunner
 from ntp_anchor.core.exceptions import (
+    TimeServiceCommandError,
     TimeServicePermissionError,
     TimeServiceTimeoutError,
     TimeServiceUnavailableError,
@@ -82,6 +83,27 @@ def test_runner_classifies_permission_text() -> None:
 
     with pytest.raises(TimeServicePermissionError):
         runner.run("tool")
+
+
+@pytest.mark.unit
+def test_runner_translates_nonzero_exit_to_command_error() -> None:
+    executor = MagicMock(
+        return_value=subprocess.CompletedProcess(
+            args=["/trusted/tool"],
+            returncode=7,
+            stdout="",
+            stderr="provider failed",
+        )
+    )
+    runner = CommandRunner(
+        resolver=lambda _: "/trusted/tool",
+        executor=executor,
+    )
+
+    with pytest.raises(TimeServiceCommandError) as caught:
+        runner.run("tool")
+
+    assert caught.value.returncode == 7
 
 
 @pytest.mark.unit

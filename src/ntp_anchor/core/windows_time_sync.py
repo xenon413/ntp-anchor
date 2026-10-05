@@ -143,7 +143,10 @@ class WindowsTimeSync(BaseTimeSync):
         if "did not resync" in output or "no time data was available" in output:
             raise TimeServiceCommandError(
                 status,
-                message="Windows accepted the resync request but reported no synchronization.",
+                message=(
+                    "Windows accepted the resync request but reported no "
+                    "synchronization."
+                ),
             )
 
         logger.info("Windows time resynchronization was requested successfully")

@@ -106,12 +106,15 @@ def _validate_hostname(value: str) -> str:
     if not server:
         raise ConfigurationError("NTP server names cannot be empty")
     if server != value:
-        raise ConfigurationError("NTP server names cannot have surrounding whitespace")
+        raise ConfigurationError(
+            "NTP server names cannot have surrounding whitespace"
+        )
     if any(character.isspace() or ord(character) < 32 for character in server):
         raise ConfigurationError(f"invalid NTP server name: {server!r}")
     if "://" in server or "/" in server or "@" in server:
         raise ConfigurationError(
-            f"NTP server must be a hostname or IP address without a scheme or path: {server!r}"
+            "NTP server must be a hostname or IP address without a scheme or "
+            f"path: {server!r}"
         )
     if server.startswith("[") and server.endswith("]"):
         raise ConfigurationError(
@@ -135,8 +138,14 @@ def _validate_hostname(value: str) -> str:
 
 
 def _servers(value: Any) -> tuple[str, ...]:
-    if value is None or isinstance(value, (str, bytes)) or not isinstance(value, Iterable):
-        raise ConfigurationError("servers must be a non-empty iterable of hostnames/IP addresses")
+    if (
+        value is None
+        or isinstance(value, (str, bytes))
+        or not isinstance(value, Iterable)
+    ):
+        raise ConfigurationError(
+            "servers must be a non-empty iterable of hostnames/IP addresses"
+        )
 
     normalized: list[str] = []
     for server in value:
@@ -246,9 +255,13 @@ class SyncConfig:
             raise ConfigurationError("auto_start_service must be a Boolean")
 
         if self.max_correction < self.thresh:
-            raise ConfigurationError("max_correction must be greater than or equal to thresh")
+            raise ConfigurationError(
+                "max_correction must be greater than or equal to thresh"
+            )
         if self.retry_max_delay < self.retry_base_delay:
-            raise ConfigurationError("retry_max_delay must be greater than or equal to retry_base_delay")
+            raise ConfigurationError(
+                "retry_max_delay must be greater than or equal to retry_base_delay"
+            )
 
     # Immutable update helpers.
     def with_cycle(self, seconds: float) -> SyncConfig:

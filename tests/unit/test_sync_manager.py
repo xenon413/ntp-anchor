@@ -465,3 +465,130 @@ def test_threshold_update_during_query_applies_to_the_next_check() -> None:
     assert result.status is CheckStatus.SYNC_SUCCEEDED
     assert backend.sync_calls == [("time.example.com",)]
     assert manager.snapshot().thresh == pytest.approx(2.0)
+
+
+@pytest.mark.unit
+def test_snapshots_remain_internally_consistent_during_concurrent_checks() -> None:
+    started = threading.Event()
+    finished = threading.Event()
+    offsets = (0.1, 0.2)
+
+    class AlternatingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def query(self, _config: SyncConfig) -> NTPQueryResult:
+            started.set()
+            offset = offsets[self.calls % len(offsets)]
+            self.calls += 1
+            return _query_result(offset)
+
+    manager = SyncManager(
+        _config(),
+        client=AlternatingClient(),
+        backend=FakeBackend(),
+        utc_now=lambda: NOW,
+    )
+    observed = []
+
+    def write_checks() -> None:
+        try:
+            for _ in range(200):
+                manager.check_once()
+        finally:
+            finished.set()
+
+    writer = threading.Thread(target=write_checks)
+    writer.start()
+    assert started.wait(1.0)
+    while not finished.is_set():
+        observed.append(manager.snapshot())
+    writer.join(1.0)
+    assert not writer.is_alive()
+    observed.append(manager.snapshot())
+
+    for snapshot in observed:
+        if snapshot.last_check_status is CheckStatus.NEVER:
+            assert snapshot.last_checked_at is None
+            assert snapshot.last_measured_offset is None
+        elif snapshot.last_check_status is CheckStatus.CHECKING:
+            assert snapshot.last_measured_offset is None
+        else:
+            assert snapshot.last_check_status is CheckStatus.WITHIN_THRESHOLD
+            assert snapshot.last_checked_at == NOW
+            assert snapshot.last_measured_offset in offsets
+
+
+@pytest.mark.unit
+def test_cycle_change_recomputes_wait_without_replacing_worker() -> None:
+    clock = {"now": 0.0}
+    wait_started = threading.Event()
+    second_check = threading.Event()
+
+    class CountingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def query(self, _config: SyncConfig) -> NTPQueryResult:
+            self.calls += 1
+            if self.calls == 2:
+                second_check.set()
+            return _query_result(0.1)
+
+    client = CountingClient()
+    manager = SyncManager(
+        _config(cycle=300.0),
+        client=client,
+        backend=FakeBackend(),
+        monotonic=lambda: clock["now"],
+    )
+    original_wait = manager._wait_for_cycle
+
+    def observed_wait(completed_at: float, stop_event: threading.Event) -> None:
+        wait_started.set()
+        original_wait(completed_at, stop_event)
+
+    manager._wait_for_cycle = observed_wait  # type: ignore[method-assign]
+    manager.start()
+    thread = manager.thread
+    assert wait_started.wait(1.0)
+
+    clock["now"] = 10.0
+    manager.set_cycle(1.0)
+
+    assert second_check.wait(1.0)
+    assert manager.thread is thread
+    assert client.calls >= 2
+    assert manager.stop().is_running is False
+
+
+@pytest.mark.unit
+def test_failure_path_enters_backoff_and_stop_wakes_it_immediately() -> None:
+    backoff_entered = threading.Event()
+
+    class FailingClient:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def query(self, _config: SyncConfig) -> NTPQueryResult:
+            self.calls += 1
+            raise TimeServiceUnavailableError("test failure")
+
+    client = FailingClient()
+    manager = SyncManager(
+        _config(retry_base_delay=30.0, retry_max_delay=30.0),
+        client=client,
+        backend=FakeBackend(),
+    )
+    original_backoff = manager._wait_for_backoff
+
+    def observed_backoff(stop_event: threading.Event) -> None:
+        backoff_entered.set()
+        original_backoff(stop_event)
+
+    manager._wait_for_backoff = observed_backoff  # type: ignore[method-assign]
+    manager.start()
+    assert backoff_entered.wait(1.0)
+
+    assert manager.stop(timeout=1.0).is_running is False
+    assert client.calls == 1

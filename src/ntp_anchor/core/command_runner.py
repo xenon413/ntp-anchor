@@ -76,7 +76,8 @@ def _trusted_directories() -> tuple[Path, ...]:
             import ctypes
 
             buffer = ctypes.create_unicode_buffer(32_768)
-            length = ctypes.windll.kernel32.GetSystemDirectoryW(  # type: ignore[attr-defined]
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            length = kernel32.GetSystemDirectoryW(
                 buffer,
                 len(buffer),
             )
@@ -157,7 +158,9 @@ def resolve_system_executable(command: str) -> str | None:
     if candidate.name != command:
         return None
 
-    search_path = os.pathsep.join(str(directory) for directory in _trusted_directories())
+    search_path = os.pathsep.join(
+        str(directory) for directory in _trusted_directories()
+    )
     resolved = shutil.which(command, path=search_path)
     if resolved is None:
         return None
@@ -171,7 +174,9 @@ def resolve_system_executable(command: str) -> str | None:
 def _minimal_environment() -> dict[str, str]:
     """Build the small environment needed by the supported system tools."""
 
-    trusted_path = os.pathsep.join(str(directory) for directory in _trusted_directories())
+    trusted_path = os.pathsep.join(
+        str(directory) for directory in _trusted_directories()
+    )
     environment = {"PATH": trusted_path}
 
     if os.name == "nt":
@@ -225,7 +230,9 @@ class CommandRunner:
         self.max_output_chars = max_output_chars
         self._resolver = resolver or resolve_system_executable
         self._executor = executor
-        self._environment = dict(environment) if environment is not None else _minimal_environment()
+        self._environment = (
+            dict(environment) if environment is not None else _minimal_environment()
+        )
 
     def resolve(self, command: str) -> str | None:
         """Return the trusted absolute path for *command*, if available."""
@@ -256,7 +263,9 @@ class CommandRunner:
 
         normalized_arguments = self._validate_arguments(arguments)
         command_line = (resolved, *normalized_arguments)
-        effective_timeout = self.timeout if timeout is None else self._validate_timeout(timeout)
+        effective_timeout = (
+            self.timeout if timeout is None else self._validate_timeout(timeout)
+        )
         accepted_codes = frozenset(int(code) for code in allowed_returncodes)
         permission_codes = self._PERMISSION_RETURN_CODES | frozenset(
             int(code) for code in permission_returncodes
@@ -466,7 +475,9 @@ class CommandRunner:
     @staticmethod
     def _validate_arguments(arguments: Sequence[str]) -> tuple[str, ...]:
         if isinstance(arguments, (str, bytes)):
-            raise TypeError("command arguments must be a sequence of individual strings")
+            raise TypeError(
+                "command arguments must be a sequence of individual strings"
+            )
 
         normalized: list[str] = []
         for argument in arguments:

@@ -77,7 +77,9 @@ class NTPQueryError(NTPAnchorError):
 
         quorum = ""
         if required is not None:
-            quorum = f" Required {required} valid response(s), received {received or 0}."
+            quorum = (
+                f" Required {required} valid response(s), received {received or 0}."
+            )
         details = ""
         if failure_map:
             rendered = "; ".join(
@@ -245,3 +247,13 @@ class WorkerStopTimeoutError(NTPAnchorError, TimeoutError):
             )
         super().__init__(message)
         self.timeout = parsed_timeout
+
+
+class PortInUseError(NTPAnchorError):
+    """Raised when the management API TCP address is already reserved."""
+
+    def __init__(self, host: str, port: int) -> None:
+        endpoint = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+        super().__init__(f"API TCP address {endpoint} is already in use.")
+        self.host = host
+        self.port = port

@@ -20,7 +20,11 @@ def _require_utc(value: datetime | None, name: str) -> None:
 
 
 def _require_finite(value: float, name: str) -> None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+    ):
         raise ValueError(f"{name} must be finite")
 
 
@@ -136,7 +140,7 @@ class NTPQueryResult:
         # accepts any iter object and converts to tuple
         object.__setattr__(self, "measurements", tuple(self.measurements))
         object.__setattr__(self, "rejected", tuple(self.rejected))
-        
+
         _require_finite(self.offset, "offset")
         if not self.measurements:
             raise ValueError("NTP consensus requires at least one measurement")
@@ -172,7 +176,9 @@ class SyncResult:
 
     @property
     def measured_offset(self) -> float:
-        latest = self.verification if self.verification is not None else self.measurement
+        latest = (
+            self.verification if self.verification is not None else self.measurement
+        )
         return latest.offset
 
 

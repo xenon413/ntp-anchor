@@ -18,16 +18,26 @@ def normalize_sync_servers(
 
     selected = default if servers is None else servers
     if isinstance(selected, (str, bytes)):
-        raise ConfigurationError("servers must be a non-empty sequence of host names or IP addresses")
+        raise ConfigurationError(
+            "servers must be a non-empty sequence of host names or IP addresses"
+        )
 
     normalized: list[str] = []
     for server in selected:
         if not isinstance(server, str):
             raise ConfigurationError("every NTP server must be a string")
-        if not server or server != server.strip() or any(character.isspace() for character in server):
-            raise ConfigurationError("NTP server names must be non-empty and cannot contain whitespace")
+        if (
+            not server
+            or server != server.strip()
+            or any(character.isspace() for character in server)
+        ):
+            raise ConfigurationError(
+                "NTP server names must be non-empty and cannot contain whitespace"
+            )
         if any(ord(character) < 32 or ord(character) == 127 for character in server):
-            raise ConfigurationError("NTP server names cannot contain control characters")
+            raise ConfigurationError(
+                "NTP server names cannot contain control characters"
+            )
         normalized.append(server)
 
     if not normalized:

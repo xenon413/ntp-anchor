@@ -1,5 +1,7 @@
 """Cross-platform NTP measurement and managed synchronization."""
 
+from importlib.metadata import PackageNotFoundError, version as _package_version
+
 from . import core
 from .core import (
     CheckStatus,
@@ -26,6 +28,14 @@ from .core import (
 )
 
 
+try:
+    __version__ = _package_version("ntp-anchor")
+except PackageNotFoundError:
+    # A source tree that has not been installed has no distribution metadata.
+    # Keep the package importable without duplicating the release version.
+    __version__ = "unknown"
+
+
 __all__ = [
     "CheckStatus",
     "DEFAULT_NTP_SERVERS",
@@ -38,6 +48,7 @@ __all__ = [
     "SyncResult",
     "WorkerSnapshot",
     "WorkerDiagnostics",
+    "__version__",
     "check_and_sync",
     "check_and_sync_thread",
     "configure_default_manager",

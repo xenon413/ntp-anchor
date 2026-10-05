@@ -1,0 +1,55 @@
+name: Privileged clock integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      acknowledgement:
+        description: >-
+          Enter I_UNDERSTAND_THIS_CHANGES_SYSTEM_TIME to authorize a real
+          clock-change attempt on the disposable runner.
+        required: true
+        type: string
+      disposable_host:
+        description: Confirm that the selected self-hosted runner is disposable.
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  privileged-clock-test:
+    if: >-
+      inputs.disposable_host == true &&
+      inputs.acknowledgement == 'I_UNDERSTAND_THIS_CHANGES_SYSTEM_TIME'
+    runs-on: [self-hosted, ntp-anchor-disposable]
+    timeout-minutes: 20
+    environment: privileged-clock-testing
+    env:
+      NTP_ANCHOR_DISPOSABLE_HOST: "1"
+      NTP_ANCHOR_RUN_LIVE_NETWORK: "1"
+      NTP_ANCHOR_RUN_PRIVILEGED: I_UNDERSTAND_THIS_CHANGES_SYSTEM_TIME
+      NTP_ANCHOR_EXECUTE_CLOCK_MUTATION: I_UNDERSTAND_THIS_CHANGES_SYSTEM_TIME
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install API and test dependencies
+        run: python -m pip install --upgrade pip ".[api,test]"
+      - name: Verify privileged guard without changing the clock
+        run: >-
+          python -m pytest
+          tests/integration/test_privileged_clock.py
+          --run-privileged
+          -m "privileged and not live_network"
+      - name: Run explicitly authorized clock-change integration
+        run: >-
+          python -m pytest
+          tests/integration/test_privileged_clock.py
+          --run-privileged
+          --run-live-network
+          -m "privileged and live_network"
+
