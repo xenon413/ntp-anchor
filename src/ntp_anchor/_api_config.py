@@ -70,6 +70,14 @@ def validate_server_mode(workers: object, reload: object) -> None:
         raise ConfigurationError("Uvicorn auto-reload is not supported")
 
 
+def validate_allow_unbounded_correction(value: object) -> bool:
+    """Validate the explicit service capability for disabling the hard guard."""
+
+    if not isinstance(value, bool):
+        raise ConfigurationError("allow_unbounded_correction must be a Boolean")
+    return value
+
+
 def validate_log_level(log_level: object) -> str:
     """Return a normalized service-wide log level."""
 
@@ -105,6 +113,7 @@ __all__ = [
     "DEFAULT_API_PORT",
     "MAX_CYCLE_SECONDS",
     "UVICORN_LOG_LEVELS",
+    "validate_allow_unbounded_correction",
     "validate_api_host",
     "validate_api_port",
     "validate_log_file",

@@ -1,0 +1,86 @@
+debug report
+---- error1 ----
+SyncVerificationError: operation failed
+cause: after sync offset greater than thresh
+currently can't reproduce this error
+
+---- error2 ----
+after sync complete thread stuck
+cause: after SyncVerificationError and back off, completing sync will cause the stuck
+varified that is not isolated event but cause by error1
+method: 
+start server with
+python -m ntp_anchor.api --log-level debug --allow-unbounded-correction
+config server
+curl.exe --% -X POST http://127.0.0.1:8000/set-max-correction -H "Content-Type: application/json" -d "{\"max_correction\": -1}"
+curl.exe --% -X POST http://127.0.0.1:8000/set-thresh -H "Content-Type: application/json" -d "{\"thresh\": 10.0}"
+
+start process
+curl.exe -X POST http://127.0.0.1:8000/start
+
+afterward status
+{"is_running":true,"cycle":300.0,"thresh":10.0,"last_checked_at":"2026-10-07T07:43:45.217429Z","last_synced_at":"2026-10-07T07:43:45.217429Z","last_check_status":"sync_succeeded","last_measured_offset":0.006088733673095703}
+
+log
+2026-10-07T07:30:26Z | 4848 | MainThread | ntp_anchor | INFO | service logging initialized log_file=C:\Users\cheny\coding\algorithm_trading_system\ntp-anchor\logs\ntp-anchor.log max_bytes=10485760 backup_count=10
+2026-10-07T07:30:52Z | 4848 | AnyIO worker thread | ntp_anchor.core.manager | WARNING | NTP maximum correction updated previous=5.000000 current=unbounded running=False
+2026-10-07T07:32:11Z | 4848 | AnyIO worker thread | ntp_anchor.core.manager | INFO | NTP drift threshold updated previous=0.500000 current=0.000000 running=False
+2026-10-07T07:42:12Z | 4848 | AnyIO worker thread | ntp_anchor.core.manager | INFO | NTP drift threshold updated previous=0.000000 current=10.000000 running=False
+2026-10-07T07:00:58Z | 4848 | ntp-anchor-sync | ntp_anchor.core.manager | INFO | NTP sync worker started
+2026-10-07T07:00:58Z | 4848 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=10.000000
+2026-10-07T07:00:59Z | 4848 | ntp-anchor-sync | ntp_anchor.core.manager | INFO | clock correction requested offset_seconds=2564.037241 source_count=3
+2026-10-07T07:00:59Z | 4848 | ntp-anchor-sync | ntp_anchor.core.windows_time_sync | DEBUG | start prepared time sync
+2026-10-07T07:00:59Z | 4848 | ntp-anchor-sync | ntp_anchor.core.windows_time_sync | DEBUG | ensuring the Windows time service is running
+2026-10-07T07:00:59Z | 4848 | ntp-anchor-sync | ntp_anchor.core.windows_time_sync | DEBUG | Windows time service is running
+2026-10-07T07:00:59Z | 4848 | ntp-anchor-sync | ntp_anchor.core.windows_time_sync | DEBUG | prepared time sync complete
+2026-10-07T07:43:45Z | 4848 | ntp-anchor-sync | ntp_anchor.core.windows_time_sync | INFO | Windows time resynchronization was requested successfully
+2026-10-07T07:43:45Z | 4848 | ntp-anchor-sync | ntp_anchor.core.manager | INFO | NTP check completed status=sync_succeeded offset_seconds=0.006089
+2026-10-07T07:48:45Z | 4848 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=10.000000
+2026-10-07T07:48:45Z | 4848 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=0.001454
+2026-10-07T07:53:45Z | 4848 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=10.000000
+2026-10-07T07:53:45Z | 4848 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=0.001145
+2026-10-07T07:54:58Z | 4848 | ntp-anchor-sync | ntp_anchor.core.manager | INFO | NTP sync worker stopped
+2026-10-07T07:54:58Z | 4848 | AnyIO worker thread | ntp_anchor.core.manager | DEBUG | NTP sync worker stop ignored; worker is already stopped
+2026-10-07T07:54:58Z | 4848 | MainThread | ntp_anchor.core.manager | DEBUG | NTP sync worker stop ignored; worker is already stopped
+
+---- error 3 ----
+TimeServiceCommandError: operation failed
+cause: unknown
+note: after retry back to normal
+actions:
+start server with
+python -m ntp_anchor.api --log-level debug --allow-unbounded-correction
+config server
+curl.exe --% -X POST http://127.0.0.1:8000/set-max-correction -H "Content-Type: application/json" -d "{\"max_correction\": -1}"
+start process
+curl.exe -X POST http://127.0.0.1:8000/start
+
+log
+2026-10-07T07:59:35Z | 30940 | MainThread | ntp_anchor | INFO | service logging initialized log_file=C:\Users\cheny\coding\algorithm_trading_system\ntp-anchor\logs\ntp-anchor.log max_bytes=10485760 backup_count=10
+2026-10-07T08:00:20Z | 30940 | AnyIO worker thread | ntp_anchor.core.manager | WARNING | NTP maximum correction updated previous=5.000000 current=unbounded running=False
+2026-10-07T07:00:15Z | 30940 | ntp-anchor-sync | ntp_anchor.core.manager | INFO | NTP sync worker started
+2026-10-07T07:00:15Z | 30940 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-07T07:00:15Z | 30940 | ntp-anchor-sync | ntp_anchor.core.manager | INFO | clock correction requested offset_seconds=3726.982204 source_count=3
+2026-10-07T07:00:15Z | 30940 | ntp-anchor-sync | ntp_anchor.core.windows_time_sync | DEBUG | start prepared time sync
+2026-10-07T07:00:15Z | 30940 | ntp-anchor-sync | ntp_anchor.core.windows_time_sync | DEBUG | ensuring the Windows time service is running
+2026-10-07T07:00:15Z | 30940 | ntp-anchor-sync | ntp_anchor.core.windows_time_sync | DEBUG | Windows time service is running
+2026-10-07T07:00:15Z | 30940 | ntp-anchor-sync | ntp_anchor.core.windows_time_sync | DEBUG | prepared time sync complete
+2026-10-07T08:02:23Z | 30940 | ntp-anchor-sync | ntp_anchor.core.manager | WARNING | periodic NTP check failed: TimeServiceCommandError: operation failed
+2026-10-07T08:02:23Z | 30940 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP sync worker entering retry backoff failures=1 delay=0.977962
+2026-10-07T08:02:24Z | 30940 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-07T08:02:25Z | 30940 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=0.000268
+2026-10-07T08:07:25Z | 30940 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-07T08:08:06Z | 30940 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=0.001579
+
+---- test sop ----
+# start service
+python -m ntp_anchor.api --log-level debug --allow-unbounded-correction
+# max_correction disable
+curl.exe --% -X POST http://127.0.0.1:8000/set-max-correction -H "Content-Type: application/json" -d "{\"max_correction\": -1}"
+# manually offset
+Set-Date -Date "2026-10-07 00:00:00"
+# start backend thread(if testing backend thread)
+curl.exe -X POST http://127.0.0.1:8000/start
+
+test other endpoints include /sync, /offset
+question: can /sync, /offset work when backend thread is working

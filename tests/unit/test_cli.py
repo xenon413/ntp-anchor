@@ -30,6 +30,7 @@ def test_launch_settings_use_documented_defaults() -> None:
     assert settings.port == DEFAULT_API_PORT
     assert settings.log_file == DEFAULT_API_LOG_FILE
     assert settings.log_level == "info"
+    assert settings.allow_unbounded_correction is False
     assert settings.sync_config == defaults
 
 
@@ -86,6 +87,7 @@ def test_cli_values_override_environment_values() -> None:
             "cli-logs/api.log",
             "--log-level",
             "debug",
+            "--allow-unbounded-correction",
         ),
         {
             cli.ENV_API_HOST: "::1",
@@ -104,6 +106,7 @@ def test_cli_values_override_environment_values() -> None:
     assert settings.port == 9000
     assert settings.log_file == "cli-logs/api.log"
     assert settings.log_level == "debug"
+    assert settings.allow_unbounded_correction is True
     assert settings.sync_config == replace(
         SyncConfig(),
         servers=("one.example.com", "two.example.com"),
@@ -175,6 +178,7 @@ def test_main_constructs_one_manager_and_forwards_validated_settings(
             "service-logs/api.log",
             "--log-level",
             "WARNING",
+            "--allow-unbounded-correction",
         ],
         environ={},
     )
@@ -194,6 +198,7 @@ def test_main_constructs_one_manager_and_forwards_validated_settings(
         reload=False,
         log_file="service-logs/api.log",
         log_level="warning",
+        allow_unbounded_correction=True,
     )
 
 
@@ -348,11 +353,12 @@ def test_help_and_version_do_not_load_api_dependencies(
     with pytest.raises(SystemExit) as help_exit:
         cli.main(["--help"], environ={})
     assert help_exit.value.code == cli.EXIT_OK
-    assert "--ntp-server" in capsys.readouterr().out
+    help_output = capsys.readouterr().out
+    assert "--ntp-server" in help_output
+    assert "--allow-unbounded-correction" in help_output
 
     with pytest.raises(SystemExit) as version_exit:
         cli.main(["--version"], environ={})
     assert version_exit.value.code == cli.EXIT_OK
     assert "ntp-anchor-api" in capsys.readouterr().out
     load_runner.assert_not_called()
-

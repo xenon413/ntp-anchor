@@ -57,6 +57,7 @@ class ApiLaunchSettings:
     sync_config: SyncConfig
     log_file: str
     log_level: str
+    allow_unbounded_correction: bool
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -76,9 +77,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--host",
         metavar="IP",
-        help=(
-            f"loopback bind address ({ENV_API_HOST}; default: {DEFAULT_API_HOST})"
-        ),
+        help=(f"loopback bind address ({ENV_API_HOST}; default: {DEFAULT_API_HOST})"),
     )
     parser.add_argument(
         "--port",
@@ -140,6 +139,14 @@ def _parser() -> argparse.ArgumentParser:
             f"service-wide log level ({ENV_LOG_LEVEL}; default: "
             f"{DEFAULT_API_LOG_LEVEL}; choices: "
             f"{', '.join(sorted(UVICORN_LOG_LEVELS))})"
+        ),
+    )
+    parser.add_argument(
+        "--allow-unbounded-correction",
+        action="store_true",
+        help=(
+            "allow the management API to accept max_correction=-1; this "
+            "does not disable the guard by itself"
         ),
     )
     return parser
@@ -290,6 +297,7 @@ def resolve_launch_settings(
         sync_config=sync_config,
         log_file=log_file,
         log_level=log_level,
+        allow_unbounded_correction=namespace.allow_unbounded_correction,
     )
 
 
@@ -331,8 +339,7 @@ def main(
         except ModuleNotFoundError as error:
             if not _missing_api_dependency(error):
                 print(
-                    "error: management API startup failed "
-                    "(ModuleNotFoundError).",
+                    "error: management API startup failed (ModuleNotFoundError).",
                     file=sys.stderr,
                 )
                 return EXIT_STARTUP_FAILURE
@@ -359,6 +366,7 @@ def main(
             reload=False,
             log_file=settings.log_file,
             log_level=settings.log_level,
+            allow_unbounded_correction=settings.allow_unbounded_correction,
         )
     except PortInUseError as error:
         print(f"error: {error}", file=sys.stderr)
@@ -378,8 +386,7 @@ def main(
         return EXIT_STARTUP_FAILURE
     except Exception as error:
         print(
-            "error: management API startup failed "
-            f"({type(error).__name__}).",
+            f"error: management API startup failed ({type(error).__name__}).",
             file=sys.stderr,
         )
         return EXIT_STARTUP_FAILURE

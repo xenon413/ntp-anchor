@@ -52,6 +52,9 @@ def test_invalid_ntp_ports_are_rejected(port: object) -> None:
         ("query_timeout", 0.0),
         ("command_timeout", math.inf),
         ("max_reference_age", -1.0),
+        ("max_correction", -1.0),
+        ("max_correction", math.inf),
+        ("max_correction", True),
         ("retry_jitter", 1.1),
     ],
 )
@@ -64,6 +67,14 @@ def test_invalid_numeric_configuration_is_rejected(field: str, value: object) ->
 def test_threshold_cannot_exceed_maximum_correction() -> None:
     with pytest.raises(ConfigurationError):
         SyncConfig(thresh=5.1, max_correction=5.0)
+
+
+@pytest.mark.unit
+def test_none_disables_the_maximum_correction_guard_in_core_config() -> None:
+    config = SyncConfig(thresh=50.0, max_correction=None)
+
+    assert config.max_correction is None
+    assert config.with_max_correction(75.0).max_correction == pytest.approx(75.0)
 
 
 @pytest.mark.unit
@@ -94,11 +105,14 @@ def test_numeric_helpers_allow_omitting_the_field_name() -> None:
 
 @pytest.mark.unit
 def test_finite_float_enforces_an_optional_inclusive_maximum() -> None:
-    assert _finite_float(
-        1.0,
-        minimum=0.0,
-        maximum=1.0,
-    ) == 1.0
+    assert (
+        _finite_float(
+            1.0,
+            minimum=0.0,
+            maximum=1.0,
+        )
+        == 1.0
+    )
 
     with pytest.raises(ConfigurationError, match=r"value must be <= 1\.0"):
         _finite_float(

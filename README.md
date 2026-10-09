@@ -22,6 +22,12 @@ an optional, loopback-only FastAPI management service for one periodic worker.
   `UnsupportedOSError`.
 - Administrator/root-equivalent permission for most clock-service operations.
 
+The management service detects correction privilege once at startup. On
+Windows it checks the current process token with `IsUserAnAdmin()`; on Linux
+and macOS it conservatively requires an effective user ID of zero. The result
+is cached for that application instance and never triggers an elevation prompt
+or relaunch.
+
 The correction backend uses these authority-aware providers:
 
 | Operating system | Providers tried for correction | Notes |
@@ -123,6 +129,7 @@ print(result.correction_attempted)
 manager.start()                # idempotent
 manager.set_cycle(60.0)        # wakes and reschedules the existing worker
 manager.set_thresh(0.25)       # applies to the next policy decision
+manager.set_max_correction(10.0)  # updates the next check's safety guard
 snapshot = manager.snapshot()  # immutable, atomic state
 manager.stop()                 # signals, wakes, and joins; idempotent
 ```
@@ -137,7 +144,8 @@ The principal public contracts are:
 | `manager.check_once()` | `SyncResult` with `within_threshold` or post-verified `sync_succeeded`; operational failures raise a typed exception and update state. |
 | `manager.start()` / `manager.stop(timeout=None)` | An immutable `WorkerSnapshot`; duplicate calls are safe. A stop that misses its deadline raises `WorkerStopTimeoutError` and continues to report the live worker truthfully. |
 | `manager.set_cycle(seconds)` | Atomically stores a finite value greater than zero and wakes a waiting worker without replacing it. The API additionally caps this at 86,400 seconds. |
-| `manager.set_thresh(seconds)` | Atomically stores a finite, non-negative value no greater than `max_correction`; it does not start or restart a worker. |
+| `manager.set_thresh(seconds)` | Atomically stores a finite, non-negative value no greater than an enabled `max_correction`; it does not start or restart a worker. |
+| `manager.set_max_correction(seconds_or_none)` | Atomically updates the next check's hard correction guard. `None` disables that guard and should be reserved for explicitly controlled deployments. |
 | `manager.snapshot()` | The seven-field public state used by `GET /status`. |
 | `manager.diagnostics()` | Sanitized internal lifecycle, failure-count, and last-error data; this is not returned by the HTTP API. |
 | `check_and_sync(...)` | Compatibility wrapper returning `SyncResult`. Per-call overrides cannot be combined with an explicit `manager`. |
@@ -206,7 +214,7 @@ configuration.
 | `max_dispersion` | `1.0` s | Maximum root dispersion. |
 | `max_reference_age` | `86400.0` s | Maximum age of the source reference timestamp. |
 | `max_sample_deviation` | `0.25` s | Maximum distance from the first-pass median before a sample is an outlier. |
-| `max_correction` | `5.0` s | Hard correction guard; must be at least `thresh`. |
+| `max_correction` | `5.0` s | Optional hard correction guard. A numeric value must be finite, non-negative, and at least `thresh`; `None` disables the guard. |
 | `max_stratum` | `15` | Highest accepted synchronized stratum. |
 | `verification_attempts` | `3` | Post-command measurement attempts. |
 | `verification_interval` | `0.25` s | Delay between verification attempts. |
@@ -219,7 +227,9 @@ configuration.
 
 Booleans are rejected where numbers or ports are expected, and all numeric
 values must be finite. `NaN`, positive/negative infinity, empty source lists,
-and undocumented `None` values are invalid.
+and undocumented `None` values are invalid. The one documented exception is
+`max_correction=None`, which removes the hard correction limit from a directly
+constructed `SyncConfig`.
 
 ## Time-integrity and lifecycle model
 
@@ -233,8 +243,8 @@ mode, stale/future references, and inconsistent exchange timestamps. It then:
 3. Rejects samples farther than `max_sample_deviation` from that median.
 4. Requires the quorum again and uses the remaining median as consensus.
 5. Makes no correction when `abs(offset) <= thresh`.
-6. Refuses correction when the consensus, or too many candidate authorities,
-   exceed `max_correction`.
+6. When `max_correction` is enabled, refuses correction when the consensus, or
+   too many candidate authorities, exceed it.
 7. Passes the validated inlier authorities to the platform provider.
 8. Remeasures and sets `last_synced_at` only after the offset converges within
    the threshold.
@@ -249,9 +259,11 @@ create at most one thread. NTP measurement, provider preparation, clock
 mutation, and verification share a process-wide single-flight lock, including
 across manager instances. After success the worker waits for `cycle`; after any
 failure it uses capped exponential backoff and jitter, so failures do not hot
-loop. A cycle update wakes the current wait. A threshold update made during a
-check applies to the next check because each operation captures an immutable
-configuration at its start.
+loop. A cycle update wakes the current wait. Threshold and maximum-correction
+updates made during a check apply to the next check because each operation
+captures an immutable configuration at its start. Disabling `max_correction`
+removes both the consensus and per-authority magnitude guards; quorum and all
+other source-validation and post-correction verification rules remain active.
 
 `stop()` wakes scheduled and verification waits and joins to a deadline. NTP
 queries and system commands are independently bounded, but a timed-out stop
@@ -306,6 +318,18 @@ ntp-anchor-api --cycle 60 --thresh 0.25 \
   --quorum 2 --log-level info
 ```
 
+To permit a trusted local API caller to disable the hard correction guard,
+launch with the explicit opt-in:
+
+```console
+ntp-anchor-api --allow-unbounded-correction
+```
+
+This option only authorizes the exact `-1` sentinel accepted by
+`POST /set-max-correction`; it does not disable the guard at startup. API
+startup also rejects a custom manager already configured with
+`max_correction=None` unless the same authorization is supplied to the server.
+
 Command-line values take precedence over environment values, which take
 precedence over defaults. An option supplied on the CLI replaces the
 corresponding environment value; repeatable CLI `--ntp-server` values replace
@@ -320,7 +344,9 @@ the complete comma-separated environment list.
 | `--ntp-server HOST` (repeatable) | `NTP_ANCHOR_NTP_SERVERS` (comma-separated) | `pool.ntp.org,time.google.com,time.cloudflare.com` | 1-16 unique, non-empty hostnames/IP addresses; no scheme, path, URI brackets, or embedded whitespace. Spaces around comma-separated environment entries are trimmed. |
 | `--ntp-port PORT` | `NTP_ANCHOR_NTP_PORT` | `123` | Integer 1-65,535; this is the remote NTP UDP port. |
 | `--quorum COUNT` | `NTP_ANCHOR_QUORUM` | `2` | Integer from 1 through the number of configured servers. |
+| `--log-file PATH` | `NTP_ANCHOR_LOG_FILE` | `logs/ntp-anchor.log` | Rotating service log destination. |
 | `--log-level LEVEL` | `NTP_ANCHOR_LOG_LEVEL` | `info` | One of `critical`, `error`, `warning`, `info`, `debug`, or `trace`. |
+| `--allow-unbounded-correction` | none | disabled | Authorizes the API's exact `max_correction=-1` sentinel; it does not change the configured guard by itself. |
 | `--version` | none | installed package version | Prints the version and exits without binding a socket. |
 
 For example:
@@ -350,8 +376,12 @@ codes are stable for service managers and scripts:
 | `130` | Keyboard interrupt. |
 
 The server starts with the synchronization worker stopped. Call `POST /start`
-when periodic checks should begin; merely launching or importing the API never
-changes the clock.
+when periodic checks should begin. `POST /offset` can measure while the worker
+is stopped, and `POST /sync` can perform one policy-controlled check that may
+change the clock. Merely launching or importing the API never does either. If
+the service is not elevated, it remains available in read-only mode and logs a
+startup warning. If privilege detection itself fails, the service logs the
+unknown status and treats correction as unavailable.
 
 ### Security boundary and port safety
 
@@ -365,6 +395,18 @@ of every route and must inject an equally strict `/close` authorization policy.
 Loopback binding is an access boundary, not user authentication: every local
 process that can reach the port can call the routes. Apply host firewall and
 process-account controls even for a loopback deployment.
+
+Privilege detection protects the host from attempting correction through a
+process known not to be elevated; it does not authenticate an API caller and
+does not guarantee that provider ACLs or host policy will allow every command.
+The command runner therefore retains its operation-level permission checks.
+
+Treat `POST /sync`, `POST /set-thresh`, and `POST /set-max-correction` as
+policy-administration operations. A caller can request an immediate correction
+or raise the finite correction limit. `--allow-unbounded-correction` adds one
+startup authorization check for the exact `-1` sentinel; it is not
+authentication, does not impose a ceiling on finite limits, and does not
+disable the default 5-second guard by itself.
 
 `POST /close` has an additional peer-address check and is loopback-only by
 default. It stops the worker before sending a response and requests Uvicorn
@@ -386,19 +428,29 @@ stable management-route inventory used by this package.
 | Method and path | Purpose | Side effect |
 | --- | --- | --- |
 | `GET /ping` | Liveness | None. |
-| `GET /help` | List the eight management routes and constraints | None. |
-| `POST /start` | Start periodic checking | Creates at most one worker. |
+| `GET /help` | List the eleven management routes and constraints | None. |
+| `POST /start` | Start periodic checking | Creates at most one worker; requires cached correction privilege. |
 | `POST /end` | Gracefully stop periodic checking | Signals, wakes, and joins the worker. |
 | `POST /close` | Stop the worker and gracefully close Uvicorn | Terminates the management process after flushing the response. |
 | `GET /status` | Return one atomic public snapshot | None. |
+| `POST /sync` | Run one policy-controlled check | May request and verify a clock correction; requires cached correction privilege. |
+| `POST /offset` | Measure a fresh consensus offset | Performs NTP I/O but does not change the clock or worker snapshot. |
 | `POST /set-cycle` | Update the periodic interval | Stores the value and wakes a waiting worker. |
 | `POST /set-thresh` | Update the drift threshold | Stores the value for the next policy decision. |
+| `POST /set-max-correction` | Update or disable the hard correction guard | Stores the value for the next policy decision. |
 
-Common failures are `422` for malformed or invalid request data, `409` when a
-lifecycle mutation races with server shutdown, `503` for an unavailable worker
-or platform operation, `504` for a bounded stop/operation timeout, and an opaque
-`500` with a server-side incident ID for an unexpected failure. JSON errors do
-not expose command lines, subprocess output, local paths, or tracebacks.
+Common failures are `422` for malformed or invalid request data; `409` when a
+lifecycle mutation races with shutdown, a manual operation loses single-flight
+admission, or a correction violates the active safety policy; `503` for an
+unavailable NTP or platform operation; `504` for a bounded stop/operation
+timeout; and an opaque `500` with a server-side incident ID for an unexpected
+failure. JSON errors do not expose command lines, subprocess output, local
+paths, or tracebacks.
+
+When correction privilege is unavailable or its detection status is unknown,
+`POST /start` and `POST /sync` fail before manager or NTP work with `503` and
+`{"detail":"Clock correction is unavailable because the service lacks the required host privileges."}`.
+Read-only and shutdown routes remain available.
 
 #### `GET /ping`
 
@@ -416,7 +468,8 @@ curl -s http://127.0.0.1:8000/ping
 #### `GET /help`
 
 Returns all management routes from the same registry used to register them.
-With the default `max_correction=5.0`, the exact data is:
+With the default launcher policy (unbounded correction not authorized), the
+exact data is:
 
 ```console
 curl -s http://127.0.0.1:8000/help
@@ -431,21 +484,29 @@ curl -s http://127.0.0.1:8000/help
     {"path":"/end","method":"POST","parameters":[],"description":"Gracefully stop periodic NTP checking."},
     {"path":"/close","method":"POST","parameters":[],"description":"Stop periodic checking and gracefully close the management server from a trusted client."},
     {"path":"/status","method":"GET","parameters":[],"description":"Return one atomic NTP worker state snapshot."},
+    {"path":"/sync","method":"POST","parameters":[],"description":"Run one policy-controlled NTP check and correction if needed."},
+    {"path":"/offset","method":"POST","parameters":[],"description":"Measure a fresh consensus offset without changing the clock."},
     {"path":"/set-cycle","method":"POST","parameters":[{"name":"cycle","location":"body","required":true,"type":"number","constraints":{"finite":true,"exclusive_minimum":0.0,"maximum":86400.0}}],"description":"Update the periodic NTP check interval."},
-    {"path":"/set-thresh","method":"POST","parameters":[{"name":"thresh","location":"body","required":true,"type":"number","constraints":{"finite":true,"minimum":0.0,"maximum":5.0}}],"description":"Update the clock-drift threshold for the next check."}
+    {"path":"/set-thresh","method":"POST","parameters":[{"name":"thresh","location":"body","required":true,"type":"number","constraints":{"finite":true,"minimum":0.0,"bounded_by_current_max_correction":true}}],"description":"Update the clock-drift threshold for the next check."},
+    {"path":"/set-max-correction","method":"POST","parameters":[{"name":"max_correction","location":"body","required":true,"type":"number","constraints":{"finite":true,"minimum":0.0,"unbounded_sentinel":-1.0,"unbounded_allowed":false}}],"description":"Update the optional maximum correction for the next check."}
   ]
 }
 ```
 
-The threshold maximum reflects the manager's configured `max_correction`, so a
-non-default manager changes that number in both `/help` and OpenAPI.
+The threshold limit is evaluated against the manager's current configuration
+when each setter runs, so `/help` and OpenAPI intentionally do not publish a
+stale numeric maximum. `/help` reports whether this server was launched with
+unbounded correction authorization; with `--allow-unbounded-correction`,
+`unbounded_allowed` is `true`. OpenAPI documents the same dynamic relationship
+and the exact `-1` sentinel in the request-field descriptions.
 
 #### `POST /start`
 
 Starts periodic checking with the current settings. It has no body. Calls are
 idempotent; repeated or simultaneous requests return `200` and create at most
 one worker. A worker-start failure returns `503`; a start after closing begins
-returns `409`.
+returns `409`. When startup privilege detection was unavailable or unknown,
+the request returns `503` before creating a worker.
 
 ```console
 curl -s -X POST http://127.0.0.1:8000/start
@@ -506,6 +567,65 @@ curl -s http://127.0.0.1:8000/status
 }
 ```
 
+#### `POST /sync`
+
+Runs one immediate `check_once()` with the manager's current immutable
+configuration. It has no body and does not start or stop the periodic worker.
+This is policy-controlled synchronization, not a forced clock change: an
+offset already within `thresh` returns `within_threshold` without invoking the
+platform provider. Otherwise the request applies quorum, source validation,
+the optional maximum-correction guard, platform correction, and post-command
+verification before returning success.
+
+```console
+curl -s -X POST http://127.0.0.1:8000/sync
+```
+
+Example when no correction was needed:
+
+```json
+{
+  "status": "within_threshold",
+  "initial_offset": 0.012,
+  "final_offset": 0.012,
+  "correction_attempted": false,
+  "checked_at": "2026-10-03T18:00:00Z",
+  "synced_at": null
+}
+```
+
+After a verified correction, `status` is `sync_succeeded`, `initial_offset` is
+the triggering consensus, `final_offset` is the verification consensus,
+`correction_attempted` is `true`, and `synced_at` is populated. The operation
+updates the normal worker snapshot check fields. A competing NTP/time-service
+operation returns `409`; a safety-policy rejection also returns `409` without
+changing the clock. When startup privilege detection was unavailable or
+unknown, the request returns `503` before querying NTP or changing manager
+state; use `POST /offset` for an unprivileged measurement.
+
+#### `POST /offset`
+
+Performs one fresh, quorum-validated `measure_once()` and has no body. It
+neither invokes a correction provider nor changes the periodic worker's public
+snapshot.
+
+```console
+curl -s -X POST http://127.0.0.1:8000/offset
+```
+
+```json
+{
+  "offset": -0.125,
+  "queried_at": "2026-10-03T18:00:00Z",
+  "source_count": 2
+}
+```
+
+`source_count` is the number of accepted inlier measurements behind the
+consensus, not the number of sources originally queried. A competing
+NTP/time-service operation returns `409`; inability to establish a trustworthy
+quorum returns `503`.
+
 #### `POST /set-cycle`
 
 Accepts one strict JSON number greater than zero and no greater than 86,400
@@ -526,11 +646,12 @@ curl -s -X POST http://127.0.0.1:8000/set-cycle \
 
 #### `POST /set-thresh`
 
-Accepts one strict, finite, non-negative JSON number no greater than the
-manager's `max_correction`. It applies atomically to the next check and does not
-restart or start a worker. Wrong types, extra fields, negative values, `NaN`,
-infinities, and values above the correction guard return `422`; a mutation
-after closing begins returns `409`.
+Accepts one strict, finite, non-negative JSON number. When the maximum
+correction guard is enabled, the threshold may not exceed its current value.
+The update applies atomically to the next check and does not restart or start a
+worker. Wrong types, extra fields, negative values, `NaN`, infinities, and
+values above an enabled correction guard return `422`; a mutation after closing
+begins returns `409`.
 
 ```console
 curl -s -X POST http://127.0.0.1:8000/set-thresh \
@@ -541,6 +662,47 @@ curl -s -X POST http://127.0.0.1:8000/set-thresh \
 ```json
 {"thresh":0.25,"is_running":true}
 ```
+
+#### `POST /set-max-correction`
+
+Accepts `{"max_correction": NUMBER}` and atomically updates the hard
+correction guard used by the next check. A normal value must be finite,
+non-negative, and no lower than the current `thresh`. The update does not start
+or restart a worker.
+
+```console
+curl -s -X POST http://127.0.0.1:8000/set-max-correction \
+  -H "Content-Type: application/json" \
+  -d '{"max_correction":10.0}'
+```
+
+```json
+{"max_correction":10.0,"max_correction_enabled":true,"is_running":true}
+```
+
+The only external disable sentinel is the exact numeric value `-1`, and the
+server must have been launched with `--allow-unbounded-correction`:
+
+```console
+curl -s -X POST http://127.0.0.1:8000/set-max-correction \
+  -H "Content-Type: application/json" \
+  -d '{"max_correction":-1}'
+```
+
+```json
+{"max_correction":null,"max_correction_enabled":false,"is_running":true}
+```
+
+Without the launch opt-in, `-1` returns `403` and preserves the current guard.
+Other negative values, JSON `null`, strings, Booleans, extra fields, `NaN`, and
+infinities return `422`. Re-enable the guard by posting any valid finite value
+at least as large as the current threshold. A rejected update preserves both
+the prior configuration and the running/stopped state.
+
+> [!WARNING]
+> An unbounded manager still validates sources, requires quorum, and verifies
+> afterward, but it has no pre-correction magnitude ceiling. A bad agreeing
+> quorum could therefore request an arbitrarily large host-clock change.
 
 ### Status values and examples
 
@@ -605,6 +767,7 @@ import httpx
 
 with httpx.Client(base_url="http://127.0.0.1:8000", timeout=10.0) as client:
     print(client.get("/ping").raise_for_status().json())
+    print(client.post("/offset").raise_for_status().json())
     print(client.post("/start").raise_for_status().json())
     print(client.get("/status").raise_for_status().json())
     print(
@@ -613,10 +776,19 @@ with httpx.Client(base_url="http://127.0.0.1:8000", timeout=10.0) as client:
         .json()
     )
     print(
+        client.post(
+            "/set-max-correction", json={"max_correction": 10.0}
+        )
+        .raise_for_status()
+        .json()
+    )
+    print(
         client.post("/set-thresh", json={"thresh": 0.25})
         .raise_for_status()
         .json()
     )
+    # May change the host clock if policy says correction is necessary.
+    print(client.post("/sync").raise_for_status().json())
     print(client.post("/end").raise_for_status().json())
     # This response is flushed before the management process shuts down.
     print(client.post("/close").raise_for_status().json())
@@ -637,15 +809,25 @@ server probe: the API listener is TCP, while NTP source traffic is UDP.
 CLI/environment configuration is validated before a socket is bound and exits
 with code 2 on failure. HTTP setters accept JSON numbers, not strings; reject
 Booleans and non-finite values; cap `cycle` at 86,400; and require
-`0 <= thresh <= max_correction`. A failed update preserves the prior
-configuration and running/stopped state.
+`0 <= thresh <= max_correction` while the correction guard is enabled. A
+finite maximum correction must be at least the current threshold. Exact `-1`
+requires the server-side `--allow-unbounded-correction` opt-in; JSON `null` does
+not disable the guard. A failed update preserves the prior configuration and
+running/stopped state.
 
 ### Clock correction reports insufficient privileges
 
 Read-only measurement normally needs no elevation, but operating-system time
-services generally do. Prefer a narrowly scoped privileged service rather than
-running the whole API or trading engine as Administrator/root. Confirm that the
-selected provider is installed and allowed by host policy.
+services generally do. At startup, a non-elevated or unknown privilege result
+produces a server-side warning and leaves the API in read-only mode. `/start`
+and `/sync` then return `503` immediately; `/offset`, `/ping`, `/help`,
+`/status`, configuration setters, `/end`, and `/close` remain available.
+
+Restart the service from an elevated process to enable correction. The service
+does not attempt an in-place `sudo` or UAC relaunch. Linux capabilities,
+PolicyKit rules, Windows service ACLs, and Group Policy can be more specific
+than the conservative startup check, so the actual provider commands still
+perform and report their own permission checks.
 
 ### NTP sources are unavailable
 

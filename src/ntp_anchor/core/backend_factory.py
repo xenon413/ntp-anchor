@@ -7,6 +7,47 @@ import platform
 from .base_time_sync import BaseTimeSync
 from .command_runner import CommandRunner, DEFAULT_COMMAND_TIMEOUT
 from .exceptions import UnsupportedOSError
+from .privileges import TimeSyncPrivilegeCheck, TimeSyncPrivilegeStatus
+
+
+def detect_time_sync_privilege(
+    os_name: str | None = None,
+) -> TimeSyncPrivilegeCheck:
+    """Run the selected platform's non-mutating privilege detector."""
+
+    try:
+        selected_os = (os_name or platform.system()).strip().casefold()
+        if selected_os == "windows":
+            from .windows_time_sync import (
+                detect_time_sync_privilege as detect_windows_privilege,
+            )
+
+            check = detect_windows_privilege()
+        elif selected_os == "linux":
+            from .linux_time_sync import (
+                detect_time_sync_privilege as detect_linux_privilege,
+            )
+
+            check = detect_linux_privilege()
+        elif selected_os == "darwin":
+            from .darwin_time_sync import (
+                detect_time_sync_privilege as detect_darwin_privilege,
+            )
+
+            check = detect_darwin_privilege()
+        else:
+            return TimeSyncPrivilegeCheck(
+                TimeSyncPrivilegeStatus.UNKNOWN,
+                error_type="UnsupportedOSError",
+            )
+        if not isinstance(check, TimeSyncPrivilegeCheck):
+            raise TypeError("platform privilege detector returned an invalid result")
+        return check
+    except Exception as error:
+        return TimeSyncPrivilegeCheck(
+            TimeSyncPrivilegeStatus.UNKNOWN,
+            error_type=type(error).__name__,
+        )
 
 
 def create_time_sync_backend(
@@ -46,4 +87,4 @@ def create_time_sync_backend(
     )
 
 
-__all__ = ["create_time_sync_backend"]
+__all__ = ["create_time_sync_backend", "detect_time_sync_privilege"]

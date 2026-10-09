@@ -174,6 +174,23 @@ def test_unsafe_offset_never_invokes_backend() -> None:
 
 
 @pytest.mark.unit
+def test_unbounded_policy_preserves_checks_but_allows_large_correction() -> None:
+    backend = FakeBackend()
+    manager = SyncManager(
+        _config(max_correction=None),
+        client=QueueClient(_query_result(500.0), _query_result(0.1)),
+        backend=backend,
+        utc_now=lambda: NOW,
+    )
+
+    result = manager.check_once()
+
+    assert result.status is CheckStatus.SYNC_SUCCEEDED
+    assert backend.prepare_calls == [("time.example.com",)]
+    assert backend.sync_calls == [("time.example.com",)]
+
+
+@pytest.mark.unit
 def test_only_consensus_inliers_reach_the_platform_backend() -> None:
     backend = FakeBackend()
     trusted = ("a.example.com", "b.example.com")
@@ -262,8 +279,25 @@ def test_invalid_dynamic_updates_leave_state_unchanged() -> None:
         manager.set_cycle(0.0)
     with pytest.raises(ConfigurationError):
         manager.set_thresh(6.0)
+    with pytest.raises(ConfigurationError):
+        manager.set_max_correction(0.25)
 
     assert manager.snapshot() == original
+    assert manager.config.max_correction == pytest.approx(5.0)
+
+
+@pytest.mark.unit
+def test_maximum_correction_update_is_atomic_and_applies_to_next_check() -> None:
+    manager = SyncManager(_config(), client=QueueClient(), backend=FakeBackend())
+
+    disabled = manager.set_max_correction(None)
+    assert disabled.is_running is False
+    assert manager.config.max_correction is None
+
+    manager.set_thresh(10.0)
+    enabled = manager.set_max_correction(20.0)
+    assert enabled.is_running is False
+    assert manager.config.max_correction == pytest.approx(20.0)
 
 
 @pytest.mark.unit

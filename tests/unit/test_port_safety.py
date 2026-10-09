@@ -20,9 +20,23 @@ from ntp_anchor.core.exceptions import (
     PortInUseError,
     WorkerStateError,
 )
+from ntp_anchor.core.privileges import (
+    TimeSyncPrivilegeCheck,
+    TimeSyncPrivilegeStatus,
+)
 
 
 pytestmark = pytest.mark.unit
+CORRECTION_ALLOWED = TimeSyncPrivilegeCheck(TimeSyncPrivilegeStatus.AVAILABLE)
+
+
+@pytest.fixture(autouse=True)
+def correction_privilege_detector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> MagicMock:
+    detector = MagicMock(return_value=CORRECTION_ALLOWED)
+    monkeypatch.setattr(api, "_detect_time_sync_privilege", detector)
+    return detector
 
 
 def _available_port(host: str, family: socket.AddressFamily) -> int:
@@ -225,6 +239,7 @@ def test_port_guard_never_uses_a_tcp_reachability_probe(
 
 def test_run_server_hands_retained_socket_to_uvicorn_and_cleans_up(
     monkeypatch: pytest.MonkeyPatch,
+    correction_privilege_detector: MagicMock,
 ) -> None:
     manager = MagicMock()
     manager.snapshot.return_value = SimpleNamespace(is_running=False)
@@ -250,6 +265,13 @@ def test_run_server_hands_retained_socket_to_uvicorn_and_cleans_up(
     )
 
     logging_config.assert_called_once_with("warning", "service-logs/api.log")
+    correction_privilege_detector.assert_called_once_with()
+    api.create_app.assert_called_once_with(
+        manager,
+        api.create_app.call_args.args[1],
+        allow_unbounded_correction=False,
+        time_sync_privilege=CORRECTION_ALLOWED,
+    )
     config_factory.assert_called_once_with(
         app=app,
         host="127.0.0.1",
@@ -290,6 +312,7 @@ def test_run_server_refuses_running_manager_before_binding(
         {"port": 0},
         {"log_file": "logs/"},
         {"log_level": "verbose"},
+        {"allow_unbounded_correction": 1},
     ],
 )
 def test_run_server_validates_all_options_before_binding(
@@ -305,6 +328,56 @@ def test_run_server_validates_all_options_before_binding(
 
     bind.assert_not_called()
     manager.stop.assert_not_called()
+
+
+def test_run_server_rejects_unbounded_manager_without_opt_in_before_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MagicMock()
+    manager.snapshot.return_value = SimpleNamespace(is_running=False)
+    manager.config.max_correction = None
+    bind = MagicMock()
+    logging_config = MagicMock()
+    monkeypatch.setattr(api, "bind_server_socket", bind)
+    monkeypatch.setattr(api, "configure_service_logging", logging_config)
+
+    with pytest.raises(ConfigurationError):
+        api.run_server(manager)
+
+    bind.assert_not_called()
+    logging_config.assert_not_called()
+
+
+def test_run_server_forwards_unbounded_correction_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = MagicMock()
+    manager.snapshot.return_value = SimpleNamespace(is_running=False)
+    manager.config.max_correction = None
+    listener = MagicMock(spec=socket.socket)
+    app = object()
+    create_app = MagicMock(return_value=app)
+    server = MagicMock()
+    monkeypatch.setattr(api, "bind_server_socket", MagicMock(return_value=listener))
+    monkeypatch.setattr(
+        api,
+        "configure_service_logging",
+        MagicMock(return_value="C:/logs/ntp-anchor.log"),
+    )
+    monkeypatch.setattr(api, "create_app", create_app)
+    monkeypatch.setattr(api.uvicorn, "Config", MagicMock(return_value=object()))
+    monkeypatch.setattr(api.uvicorn, "Server", MagicMock(return_value=server))
+
+    api.run_server(manager, allow_unbounded_correction=True)
+
+    create_app.assert_called_once_with(
+        manager,
+        create_app.call_args.args[1],
+        allow_unbounded_correction=True,
+        time_sync_privilege=CORRECTION_ALLOWED,
+    )
+    manager.stop.assert_called_once_with()
+    listener.close.assert_called_once_with()
 
 
 def test_run_server_closes_socket_and_stops_manager_after_server_failure(
@@ -330,4 +403,3 @@ def test_run_server_closes_socket_and_stops_manager_after_server_failure(
     logging_config.assert_called_once_with("info", "logs/ntp-anchor.log")
     manager.stop.assert_called_once_with()
     listener.close.assert_called_once_with()
-

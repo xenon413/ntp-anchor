@@ -3,11 +3,13 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
+from ntp_anchor.core import windows_time_sync
 from ntp_anchor.core.exceptions import (
     TimeServiceCommandError,
     TimeServicePermissionError,
     TimeServiceTimeoutError,
 )
+from ntp_anchor.core.privileges import TimeSyncPrivilegeStatus
 from ntp_anchor.core.windows_time_sync import WindowsTimeSync
 
 
@@ -46,6 +48,42 @@ def _backend(runner: MagicMock) -> WindowsTimeSync:
         monotonic=lambda: 0.0,
         sleep=lambda _: None,
     )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("is_admin", "expected"),
+    [
+        (True, TimeSyncPrivilegeStatus.AVAILABLE),
+        (False, TimeSyncPrivilegeStatus.UNAVAILABLE),
+    ],
+)
+def test_windows_privilege_detection(
+    monkeypatch: pytest.MonkeyPatch,
+    is_admin: bool,
+    expected: TimeSyncPrivilegeStatus,
+) -> None:
+    monkeypatch.setattr(windows_time_sync, "_is_user_an_admin", lambda: is_admin)
+
+    result = windows_time_sync.detect_time_sync_privilege()
+
+    assert result.status is expected
+    assert result.error_type is None
+
+
+@pytest.mark.unit
+def test_windows_privilege_detection_failure_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail() -> bool:
+        raise OSError("private detection detail")
+
+    monkeypatch.setattr(windows_time_sync, "_is_user_an_admin", fail)
+
+    result = windows_time_sync.detect_time_sync_privilege()
+
+    assert result.status is TimeSyncPrivilegeStatus.UNKNOWN
+    assert result.error_type == "OSError"
 
 
 @pytest.mark.unit

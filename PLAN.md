@@ -12,7 +12,9 @@ The implementation must preserve clear boundaries between:
 4. Thread-safe runtime state and background-worker lifecycle.
 5. The FastAPI/Uvicorn management interface.
 
-FastAPI, Uvicorn lifecycle control, port guarding, and persistent runtime status are new features. They do not exist in the current codebase.
+FastAPI, Uvicorn lifecycle control, port guarding, persistent runtime status,
+manual measurement/synchronization, and runtime correction-limit management are
+part of the target service described by this roadmap.
 
 ## 1. Audit Summary
 
@@ -39,7 +41,7 @@ FastAPI, Uvicorn lifecycle control, port guarding, and persistent runtime status
 ### FastAPI management interface
 
 - A dedicated module/starter such as `ntp_anchor/api.py` is required. Importing it must not start a thread or server as a side effect.
-- The interface must implement exactly the planned management routes: `/ping`, `/help`, `/start`, `/end`, `/close`, `/status`, `/set-cycle`, and `/set-thresh`.
+- The interface must implement exactly the eleven planned management routes: `/ping`, `/help`, `/start`, `/end`, `/close`, `/status`, `/sync`, `/offset`, `/set-cycle`, `/set-thresh`, and `/set-max-correction`.
 - Route handlers must use one injected, thread-safe manager rather than mutate module globals.
 - Blocking joins, NTP calls, and subprocess work must not block FastAPI's event loop.
 - `/close` must request a normal Uvicorn shutdown after stopping the worker; it must never call `os._exit()`, kill the process abruptly, or leave the worker running.
@@ -105,7 +107,7 @@ Additional internal diagnostic state, such as a sanitized last error and consecu
 
 `ntp_anchor/api.py` should expose:
 
-- `create_app(manager, shutdown_callback)` for deterministic dependency injection and tests.
+- `create_app(manager, shutdown_callback, *, allow_unbounded_correction=False)` for deterministic dependency injection and tests; the Boolean opt-in authorizes only the external disable sentinel.
 - A launcher that validates configuration, acquires the listening socket, constructs `uvicorn.Config`/`uvicorn.Server`, injects a graceful shutdown callback, and runs the server.
 - `main()` as the console-script entry point.
 - No import-time server, socket, thread, or clock side effects.
@@ -130,8 +132,8 @@ If the module becomes too large, request/response models and lifecycle helpers m
 
 1. Validate NTP servers as a non-empty immutable collection of non-empty hostnames/IP addresses.
 2. Validate NTP UDP ports and future API TCP ports as integers from 1 through 65535; reject Booleans and non-integer values.
-3. Require finite `thresh >= 0`, finite `cycle > 0`, finite positive timeouts, and a finite maximum correction greater than or equal to `thresh`.
-4. Reject `NaN`, infinities, empty iterables, bare strings passed where collections are expected, and undocumented `None` values.
+3. Require finite `thresh >= 0`, finite `cycle > 0`, finite positive timeouts, and, when enabled, a finite maximum correction greater than or equal to `thresh`.
+4. Represent a disabled maximum-correction guard internally as `max_correction=None`; reject `NaN`, infinities, other undocumented `None` values, empty iterables, and bare strings passed where collections are expected.
 5. Centralize defaults so server lists, thresholds, timeouts, and cycles are not duplicated across wrappers.
 
 ### 1.3 Implement the synchronized state tracker
@@ -160,13 +162,14 @@ If the module becomes too large, request/response models and lifecycle helpers m
 5. Add an OS-level lock or explicitly retain the single-process restriction before permitting multiple application processes.
 6. Make every subprocess bounded so `stop()` has a calculable upper bound.
 
-### 1.5 Support dynamic cycle and threshold changes
+### 1.5 Support dynamic cycle, threshold, and correction-limit changes
 
-1. Implement atomic `set_cycle(seconds)` and `set_thresh(seconds)` controller methods.
+1. Implement atomic `set_cycle(seconds)`, `set_thresh(seconds)`, and `set_max_correction(seconds_or_none)` controller methods.
 2. Preferred cycle behavior: preserve the current worker, update the value, signal a reconfiguration event/condition, and recompute its next wait immediately.
 3. If restarting is ultimately necessary, stop/join the old worker before starting one replacement and preserve whether it was active. No two workers may overlap.
 4. Threshold changes apply to the next policy decision without restarting the worker.
-5. Validation failure leaves the old value and thread state unchanged.
+5. Maximum-correction changes apply to the next operation without restarting the worker; internal `None` means the maximum-correction guard is disabled.
+6. Validation failure leaves the old value and thread state unchanged.
 
 ### 1.6 Carry forward time-integrity and platform fixes
 
@@ -184,7 +187,7 @@ If the module becomes too large, request/response models and lifecycle helpers m
 - Refactored core interfaces and typed result/error contracts.
 - Thread-safe `SyncManager` and immutable state snapshot.
 - Idempotent start/stop and single-flight synchronization.
-- Dynamic cycle/threshold update methods.
+- Dynamic cycle/threshold/maximum-correction update methods.
 - Bounded retry, command execution, and shutdown behavior.
 - Corrected platform-provider and post-sync verification behavior.
 
@@ -197,6 +200,7 @@ If the module becomes too large, request/response models and lifecycle helpers m
 - Stop completes within the documented bound under mocked timeout conditions.
 - Cycle updates wake the existing worker and do not duplicate it.
 - Threshold updates affect the next check and do not restart a stopped worker.
+- Maximum-correction updates affect the next operation, preserve worker state, and maintain `max_correction >= thresh` whenever the guard is enabled.
 - Invalid updates preserve the previous state.
 - Concurrent scheduled/manual sync attempts execute at most one platform mutation.
 - Successful sync results include post-sync convergence; excessive or untrusted offsets never invoke a command.
@@ -247,11 +251,13 @@ If the module becomes too large, request/response models and lifecycle helpers m
 
 - Build the response from route metadata or a single shared endpoint registry so it cannot silently drift from the actual routes.
 - List every required management route, HTTP method, request parameter/body field, constraints, and description. The generated FastAPI `/docs` and `/openapi.json` may coexist but do not replace `/help`.
+- Report dynamic configuration constraints without capturing a stale numeric maximum: threshold metadata identifies that the current enabled guard is authoritative, and maximum-correction metadata reports whether the unbounded sentinel was authorized at service startup.
 
 #### `POST /start`
 
 - Purpose: start periodic background checking using the current cycle and threshold.
 - Parameters: none.
+- Require the cached startup privilege result to be `available`; return sanitized `503 Service Unavailable` before creating a worker when correction privilege is unavailable or its detection status is unknown.
 - Success: `200 OK`.
 - If stopped, start one worker and return `{"is_running": true}`.
 - If already running, make no change and return the same `200 OK` response.
@@ -299,6 +305,46 @@ If the module becomes too large, request/response models and lifecycle helpers m
   - `last_measured_offset`
 - Define Pydantic response models so timestamps, nullability, finite floats, and field names remain stable.
 
+#### `POST /sync`
+
+- Purpose: run one immediate, policy-controlled NTP check and correct the clock only when the configured threshold is exceeded and the correction is permitted.
+- Parameters: none.
+- Require the cached startup privilege result to be `available`; return sanitized `503 Service Unavailable` before NTP or manager work when correction privilege is unavailable or unknown. Unprivileged clients can use `/offset` for read-only measurement.
+- Use the same quorum, response validation, threshold, maximum-correction, platform, single-flight, and post-sync verification path as the background worker; do not bypass policy through a direct platform call.
+- Success: `200 OK` with the structured result, for example:
+
+```json
+{
+  "status": "within_threshold",
+  "initial_offset": 0.125,
+  "final_offset": 0.125,
+  "correction_attempted": false,
+  "checked_at": "2026-01-01T00:00:00Z",
+  "synced_at": null
+}
+```
+
+- Update the same atomic status snapshot as a scheduled check.
+- Return `409 Conflict` when another NTP/time-service operation owns the single-flight lock or the current safety policy prohibits the correction; map bounded timeouts and unavailable dependencies without exposing platform output.
+
+#### `POST /offset`
+
+- Purpose: measure and return one fresh consensus NTP offset without changing the system clock.
+- Parameters: none.
+- Success: `200 OK`, for example:
+
+```json
+{
+  "offset": 0.125,
+  "queried_at": "2026-01-01T00:00:00Z",
+  "source_count": 3
+}
+```
+
+- Apply the normal NTP response validation, quorum, and outlier rules and serialize against other NTP/time-service operations.
+- Do not start the worker, invoke the platform synchronization backend, or overwrite the background worker's seven-field status snapshot.
+- Return `409 Conflict` if another operation remains active after the configured single-flight deadline.
+
 #### `POST /set-cycle`
 
 - Purpose: update the worker interval in seconds.
@@ -322,18 +368,37 @@ If the module becomes too large, request/response models and lifecycle helpers m
 {"thresh": 0.25}
 ```
 
-- Require a finite non-negative number that does not exceed the configured maximum correction.
+- Require a finite non-negative number that does not exceed the current maximum correction when that guard is enabled.
 - Success: `200 OK` with the accepted threshold and running state, for example `{"thresh": 0.25, "is_running": true}`.
 - Apply atomically to the next check; do not restart the worker solely for a threshold update.
+
+#### `POST /set-max-correction`
+
+- Purpose: update or explicitly disable the maximum automatic correction guard.
+- JSON request for a bounded guard:
+
+```json
+{"max_correction": 5.0}
+```
+
+- Require an exact `-1` sentinel or a finite non-negative number. An enabled finite value must be greater than or equal to the current threshold.
+- Normalize external `-1` to internal `max_correction=None`; do not store `-1` in the core configuration.
+- Accept the `-1` sentinel only when the service was launched with `--allow-unbounded-correction`. Otherwise return `403 Forbidden` and preserve the previous configuration.
+- The launcher option is an authorization gate for the sentinel; it does not disable the guard on startup. A client must still explicitly submit `{"max_correction": -1}`.
+- Success for a finite guard: `200 OK` with `{"max_correction": 5.0, "max_correction_enabled": true, "is_running": true}`.
+- Success for a disabled guard: `200 OK` with `{"max_correction": null, "max_correction_enabled": false, "is_running": true}`.
+- Apply atomically to the next operation and preserve the current worker running/stopped state.
+- Treat this endpoint as safety-sensitive. The opt-in controls the exact unbounded sentinel, while trusted clients can still select a very large finite limit.
 
 ### 2.3 Define API errors and concurrency behavior
 
 1. Return FastAPI/Pydantic `422` responses for invalid JSON, missing fields, wrong types, out-of-range values, `NaN`, and infinity.
 2. Use `409 Conflict` only for genuine lifecycle/operation conflicts; normal duplicate `/start` and `/end` calls remain `200`.
-3. Use `503` or `504` for unavailable backends and bounded operation/shutdown timeouts.
-4. Return opaque `500` errors for unexpected failures and log an incident identifier server-side.
-5. Never expose command lines, raw stderr/stdout, local paths, or tracebacks in JSON responses.
-6. Serialize lifecycle mutations through the manager lock and use immutable snapshots for status reads.
+3. Use `403 Forbidden` when a client requests the unbounded `-1` sentinel but the server was not launched with the explicit opt-in.
+4. Use `503` or `504` for unavailable backends and bounded operation/shutdown timeouts.
+5. Return opaque `500` errors for unexpected failures and log an incident identifier server-side.
+6. Never expose command lines, raw stderr/stdout, local paths, or tracebacks in JSON responses.
+7. Serialize lifecycle and configuration mutations through the manager lock, serialize NTP/platform operations through the single-flight lock, and use immutable snapshots for status reads.
 
 ### 2.4 Implement the pre-launch port guard
 
@@ -356,11 +421,14 @@ If the module becomes too large, request/response models and lifecycle helpers m
 3. Disable production auto-reload because reload supervisors can create duplicate process lifecycle effects.
 4. Require explicit authentication/TLS or a trusted authenticated reverse proxy before allowing non-loopback binding.
 5. Ensure Ctrl+C, service-manager termination, `/close`, and unexpected server shutdown all run the same idempotent manager cleanup.
+6. Keep the maximum-correction guard enabled by default. Permit the HTTP `-1` disable sentinel only when startup explicitly includes `--allow-unbounded-correction`, and reject an already-unbounded manager at API construction/startup without that opt-in.
+7. Treat loopback binding as an exposure boundary, not authentication. Only trusted local clients may access clock-changing or safety-policy endpoints, particularly `/sync`, `/set-max-correction`, and `/close`.
+8. Detect platform correction privilege once at service startup without prompting or relaunching, cache the tri-state result per application, warn for unavailable/unknown results, and keep read-only plus shutdown routes available. Unknown detection must fail closed for `/start` and `/sync`, not terminate the API.
 
 ### Phase 2 deliverables
 
 - Dedicated FastAPI application factory and Uvicorn starter.
-- All eight required endpoints and Pydantic request/response models.
+- All eleven required endpoints and Pydantic request/response models.
 - Graceful server shutdown adapter for `/close`.
 - Pre-bound TCP port guard and explicit collision error.
 - Loopback/single-worker safety defaults.
@@ -375,6 +443,10 @@ If the module becomes too large, request/response models and lifecycle helpers m
 - `/status` never returns a torn snapshot during concurrent updates.
 - Running and stopped cycle updates preserve their respective lifecycle states.
 - Threshold changes take effect without spawning a thread.
+- `/offset` performs a fresh read-only consensus measurement without changing worker status or invoking a correction.
+- `/sync` uses the same safety and verification policy as the worker and serializes against concurrent operations.
+- `/start` and `/sync` return `503` before manager/NTP work when cached correction privilege is unavailable or unknown; `/offset` and shutdown routes remain usable.
+- Maximum-correction updates preserve lifecycle state; exact `-1` is rejected unless startup explicitly authorized it, and accepted `-1` is represented internally and in responses as `None`/`null`.
 - Invalid update requests are rejected without changing state.
 - An occupied port prevents server and worker startup and produces the explicit collision error.
 - A successful pre-bind socket remains reserved until Uvicorn owns/closes it.
@@ -415,11 +487,13 @@ ntp-anchor-api = "ntp_anchor.api:main"
    - `--thresh`
    - repeatable/configured NTP servers
    - log level
+   - `--allow-unbounded-correction` as a CLI-only Boolean opt-in that authorizes, but does not itself apply, the `/set-max-correction` value `-1`
 3. Define precedence among CLI arguments, environment variables, and defaults.
 4. Validate every option before binding a socket or creating a worker.
 5. If API dependencies are missing, fail with a concise instruction to install `ntp-anchor[api]` rather than an opaque import traceback.
 6. Optionally support `python -m ntp_anchor.api` through the same `main()` path so behavior cannot diverge.
 7. Ensure CLI startup instantiates one manager, one app, one retained socket, and one Uvicorn server.
+8. Validate the unbounded-correction opt-in before logging, socket binding, application construction, or worker startup; do not infer it from an environment variable or a numeric maximum-correction value.
 
 ### 3.3 Package and process behavior
 
@@ -453,8 +527,8 @@ ntp-anchor-api = "ntp_anchor.api:main"
 Populate or add:
 
 - `tests/unit/test_network_ntp.py`: query exhaustion, validated response fields, quorum/median, outliers, maximum correction, and per-server errors.
-- `tests/unit/test_config.py`: cycle, threshold, timeout, server, API TCP port, and NTP UDP port boundaries.
-- `tests/unit/test_sync_manager.py`: atomic snapshots, state transitions, start/end idempotency, reconfiguration, backoff, single-flight locking, and bounded shutdown.
+- `tests/unit/test_config.py`: cycle, threshold, optional maximum correction, timeout, server, API TCP port, and NTP UDP port boundaries.
+- `tests/unit/test_sync_manager.py`: atomic snapshots, state transitions, start/end idempotency, manual measurement/synchronization, reconfiguration, backoff, single-flight locking, and bounded shutdown.
 - `tests/unit/test_core_logic.py`: policy boundaries and post-sync verification.
 - `tests/unit/test_command_runner.py`: absolute resolution, missing commands, permissions, output limits, nonzero exits, and timeouts.
 - `tests/unit/test_linux_time_sync.py`: alternative provider selection and fallback.
@@ -468,13 +542,16 @@ Populate or add:
 | Route | Required cases |
 | --- | --- |
 | `GET /ping` | Exact `{"status": "pong"}`; no manager/network side effects |
-| `GET /help` | All eight routes; correct methods, body fields, constraints, descriptions; no stale entries |
-| `POST /start` | Stopped, already running, simultaneous requests, thread-start failure |
+| `GET /help` | All eleven routes; correct methods, body fields, dynamic constraints, descriptions; no stale entries |
+| `POST /start` | Stopped, already running, simultaneous requests, thread-start failure, unavailable/unknown correction privilege rejected before worker creation |
 | `POST /end` | Running, already stopped, simultaneous requests, join timeout |
 | `POST /close` | Worker running/stopped, response before shutdown, callback once, cleanup failure |
 | `GET /status` | Initial state, in-progress state, successful check, sync success, every failure status, concurrent reads |
+| `POST /sync` | Within-threshold and corrected results, snapshot updates, safety rejection, operation-busy conflict, query/backend/verification failure, unavailable/unknown correction privilege rejected before NTP work |
+| `POST /offset` | Exact fresh result, no platform mutation, no worker-snapshot mutation, operation-busy conflict, query failure |
 | `POST /set-cycle` | Running/stopped, immediate wake, min/max boundaries, wrong type, zero, negative, NaN/infinity |
-| `POST /set-thresh` | Running/stopped, next-check visibility, min/max boundaries, wrong type, negative, NaN/infinity |
+| `POST /set-thresh` | Running/stopped, next-check visibility, enabled/disabled maximum guard, min/max boundaries, wrong type, negative, NaN/infinity |
+| `POST /set-max-correction` | Running/stopped, finite enable/update, threshold invariant, exact `-1` denied without opt-in and accepted with opt-in, re-enable, wrong type, other negatives, NaN/infinity |
 
 Use an injected fake manager and shutdown adapter for route-unit tests. A unit test for `/close` must never terminate the pytest process.
 
@@ -488,6 +565,8 @@ Use an injected fake manager and shutdown adapter for route-unit tests. A unit t
 6. Change threshold during a check and document whether the current or next policy decision owns the update; test that exact rule.
 7. Hold the sync lock with a fake operation and prove a second request is rejected/serialized as designed.
 8. Simulate command timeout and verify stop eventually completes within its upper bound.
+9. Change the maximum correction while stopped and running and verify the new immutable configuration is used only by the next operation without changing lifecycle state.
+10. Prove manual `/sync` and `/offset` requests cannot overlap the background check or each other.
 
 ### 4.4 Port and server lifecycle integration tests
 
@@ -518,6 +597,8 @@ Use an injected fake manager and shutdown adapter for route-unit tests. A unit t
 4. Build sdist/wheel, install into a clean environment, and smoke-test imports and the CLI.
 5. Add a separate manually triggered, isolated workflow for privileged integration tests.
 6. Fail CI if route/OpenAPI/help contracts diverge or if default pytest collection includes clock-changing tests.
+7. Verify CLI forwarding and startup validation for `--allow-unbounded-correction`, including refusal to construct or launch an already-unbounded manager without the opt-in.
+8. Mock Windows, Linux, and macOS privilege detection; prove it is cached once, unknown detection emits a warning, privileged endpoints fail closed, and read-only/shutdown routes remain available.
 
 ### Phase 4 deliverables
 
@@ -551,6 +632,7 @@ Use an injected fake manager and shutdown adapter for route-unit tests. A unit t
 1. Show core-only and API-enabled installation commands, including `.[api]` if the optional-extra design is selected.
 2. Document CLI and `python -m` startup examples.
 3. Document every CLI option, environment variable, default, validation rule, and precedence.
+   Explicitly distinguish `--allow-unbounded-correction` as a CLI-only authorization gate: the flag alone does not disable the guard, and the API must still receive the exact `-1` sentinel.
 4. State that the default bind is loopback and the initial implementation supports exactly one Uvicorn worker.
 5. Document authentication/TLS expectations before non-loopback exposure.
 6. Explain the pre-launch port guard, explicit occupied-port error, and distinction between API TCP ports and NTP UDP reachability.
@@ -567,7 +649,7 @@ For every endpoint, document:
 - Idempotency and concurrency semantics.
 - Security restrictions.
 
-Include all eight endpoints:
+Include all eleven endpoints:
 
 - `GET /ping`
 - `GET /help`
@@ -575,16 +657,21 @@ Include all eight endpoints:
 - `POST /end`
 - `POST /close`
 - `GET /status`
+- `POST /sync`
+- `POST /offset`
 - `POST /set-cycle`
 - `POST /set-thresh`
+- `POST /set-max-correction`
 
 ### 5.4 Add runnable examples
 
-1. Add `curl` examples for every endpoint, including JSON bodies and content type for both setters.
-2. Add Python examples using a documented client library for ping, start, status, settings changes, end, and close.
+1. Add `curl` examples for every endpoint, including JSON bodies and content type for all three setters.
+2. Add Python examples using a documented client library for ping, start, status, manual offset/sync operations, settings changes, end, and close.
 3. Show representative initial, running, successful-check, synchronized, and failed `/status` payloads.
 4. Warn that `/close` shuts down the management process and should be restricted.
 5. Include troubleshooting examples for occupied ports, invalid settings, insufficient OS privileges, unavailable NTP sources, failed post-sync verification, and missing API extras.
+6. Warn that disabling the maximum-correction guard removes a primary protection against large clock steps; explain the opt-in launch flag, exact `-1` request sentinel, internal/response `null`, and how to re-enable a finite limit.
+7. Explain the cached `available`/`unavailable`/`unknown` privilege result, startup warnings, `/start` and `/sync` `503` behavior, and the read-only routes retained without elevation.
 
 ### 5.5 Add contributor/testing guidance
 
@@ -607,7 +694,7 @@ Include all eight endpoints:
 - Every endpoint example matches the tested Pydantic schema and exact route behavior.
 - `/help`, OpenAPI, tests, and the README list the same methods, parameters, and descriptions.
 - Installation instructions work in clean core-only and API-enabled environments.
-- A new operator can start the server, detect a port conflict, inspect status, change cycle/threshold, start/end the worker, and close the server without reading source code.
+- A new operator can start the server, detect a port conflict, inspect status, measure an offset, request one policy-controlled sync, change cycle/threshold/maximum correction, start/end the worker, and close the server without reading source code.
 - Security, privilege, single-worker, time-integrity, and clock-mutation warnings are prominent.
 
 ## 4. Final Acceptance Checklist
@@ -617,11 +704,14 @@ Include all eight endpoints:
 - [ ] Unsafe corrections are blocked and successful syncs are verified afterward.
 - [ ] One thread-safe manager owns one worker and one clock mutation at a time.
 - [ ] Runtime state fields are atomically updated and accurately returned by `/status`.
-- [ ] Cycle and threshold changes are validated, atomic, and preserve the intended running/stopped state.
-- [ ] All eight required FastAPI routes implement their documented idempotency and response contracts.
+- [ ] Cycle, threshold, and maximum-correction changes are validated, atomic, and preserve the intended running/stopped state.
+- [ ] The disabled maximum-correction state is represented internally as `None`; external exact `-1` is accepted only with `--allow-unbounded-correction`, and the flag alone never disables the guard.
+- [ ] All eleven required FastAPI routes implement their documented idempotency and response contracts.
+- [ ] `/offset` is read-only and `/sync` follows the same quorum, policy, single-flight, and post-verification path as the background worker.
 - [ ] `/close` stops the worker and requests graceful Uvicorn shutdown without abrupt process termination.
 - [ ] A retained pre-bound socket prevents port-collision startup and reduces bind races.
 - [ ] The server defaults to loopback and one Uvicorn worker.
+- [ ] Correction privilege is detected once per service; unavailable/unknown results are logged and block `/start` plus `/sync` without disabling read-only or shutdown access.
 - [ ] Core-only and API-enabled installations, entry points, and missing-extra errors are tested.
 - [ ] Default pytest and CI runs never change the host clock or require privileges.
 - [ ] Cross-platform tests, API/concurrency tests, real port-collision tests, and subprocess shutdown tests pass.
@@ -629,5 +719,5 @@ Include all eight endpoints:
 
 ## Definition of Done
 
-The roadmap is complete only when the management interface can safely start, observe, reconfigure, stop, and close a single background synchronization worker; port collisions are rejected before server startup; time synchronization is validated and post-verified; every blocking operation has a deadline; default tests never mutate the host clock; and the package, CLI, API, tests, and README all describe the same behavior.
+The roadmap is complete only when the management interface can safely start, observe, measure, manually synchronize, reconfigure, stop, and close a single background synchronization worker; port collisions are rejected before server startup; time synchronization is validated and post-verified; disabling the maximum-correction guard requires explicit launch authorization and an explicit API request; every blocking operation has a deadline; default tests never mutate the host clock; and the package, CLI, API, tests, and README all describe the same behavior.
 

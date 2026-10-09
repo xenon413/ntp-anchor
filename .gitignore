@@ -10,3 +10,6 @@ htmlcov/
 build/
 dist/
 .smoke-*/
+# ignore .log 
+logs/*
+!logs/.gitkeep

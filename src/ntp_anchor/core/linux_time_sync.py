@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 import logging
+import os
 
 from .base_time_sync import BaseTimeSync, normalize_sync_servers
 from .command_runner import CommandRunner
@@ -14,9 +15,34 @@ from .exceptions import (
     TimeServiceTimeoutError,
     TimeServiceUnavailableError,
 )
+from .privileges import TimeSyncPrivilegeCheck, TimeSyncPrivilegeStatus
 
 
 logger = logging.getLogger(__name__)
+
+
+def _effective_user_id() -> int:
+    """Return the effective POSIX user ID through a testable seam."""
+
+    get_effective_user_id = getattr(os, "geteuid")
+    return int(get_effective_user_id())
+
+
+def detect_time_sync_privilege() -> TimeSyncPrivilegeCheck:
+    """Conservatively require a root process for Linux correction commands."""
+
+    try:
+        is_elevated = _effective_user_id() == 0
+    except Exception as error:
+        return TimeSyncPrivilegeCheck(
+            TimeSyncPrivilegeStatus.UNKNOWN,
+            error_type=type(error).__name__,
+        )
+    return TimeSyncPrivilegeCheck(
+        TimeSyncPrivilegeStatus.AVAILABLE
+        if is_elevated
+        else TimeSyncPrivilegeStatus.UNAVAILABLE
+    )
 
 
 class LinuxTimeSync(BaseTimeSync):
@@ -42,8 +68,7 @@ class LinuxTimeSync(BaseTimeSync):
 
         normalize_sync_servers(servers)
         if any(
-            self._command_exists(command)
-            for command in ("ntpdate", "sntp", "chronyd")
+            self._command_exists(command) for command in ("ntpdate", "sntp", "chronyd")
         ):
             return
         raise TimeServiceUnavailableError(

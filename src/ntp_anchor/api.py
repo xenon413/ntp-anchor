@@ -27,6 +27,7 @@ from ._api_config import (
     DEFAULT_API_LOG_LEVEL,
     DEFAULT_API_PORT,
     MAX_CYCLE_SECONDS,
+    validate_allow_unbounded_correction as _validate_allow_unbounded_correction,
     validate_api_host as _validate_host,
     validate_api_port as _validate_port,
     validate_log_level as _validate_log_level,
@@ -34,6 +35,9 @@ from ._api_config import (
 )
 from ._cli import main as _cli_main
 from ._logging import configure_service_logging
+from .core.backend_factory import (
+    detect_time_sync_privilege as _detect_time_sync_privilege,
+)
 from .core.config import SyncConfig
 from .core.exceptions import (
     ConfigurationError,
@@ -42,13 +46,20 @@ from .core.exceptions import (
     TimeServiceCommandError,
     TimeServiceTimeoutError,
     TimeServiceUnavailableError,
+    UnsafeCorrectionError,
     UnexpectedError,
     UnsupportedOSError,
     WorkerStateError,
     WorkerStopTimeoutError,
 )
 from .core.manager import SyncManager
-from .core.models import CheckStatus, WorkerSnapshot
+from .core.models import (
+    CheckStatus,
+    NTPQueryResult,
+    SyncResult,
+    WorkerSnapshot,
+)
+from .core.privileges import TimeSyncPrivilegeCheck, TimeSyncPrivilegeStatus
 
 
 try:
@@ -70,6 +81,10 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _SOCKET_BACKLOG = 2_048
+_CORRECTION_PRIVILEGE_DETAIL = (
+    "Clock correction is unavailable because the service lacks the required "
+    "host privileges."
+)
 
 
 class _ApiModel(BaseModel):
@@ -116,10 +131,32 @@ class ThreshRequest(_ApiModel):
             ge=0.0,
             description=(
                 "Clock-drift threshold in seconds; it may not exceed the "
-                "manager's configured maximum correction."
+                "manager's current maximum correction when that guard is enabled."
             ),
         ),
     ]
+
+
+class MaxCorrectionRequest(_ApiModel):
+    """Validated runtime correction-limit update."""
+
+    max_correction: Annotated[
+        float,
+        BeforeValidator(_strict_finite_number),
+        Field(
+            description=(
+                "Finite maximum automatic correction in seconds. Exact -1 "
+                "disables this guard when the server explicitly allows it."
+            ),
+        ),
+    ]
+
+    @field_validator("max_correction")
+    @classmethod
+    def _validate_max_correction(cls, value: float) -> float:
+        if value == -1.0 or value >= 0.0:
+            return value
+        raise ValueError("max_correction must be -1 or non-negative")
 
 
 class PingResponse(_ApiModel):
@@ -143,6 +180,27 @@ class CycleResponse(_ApiModel):
 class ThreshResponse(_ApiModel):
     thresh: Annotated[float, Field(ge=0.0)]
     is_running: bool
+
+
+class MaxCorrectionResponse(_ApiModel):
+    max_correction: Annotated[float | None, Field(ge=0.0)]
+    max_correction_enabled: bool
+    is_running: bool
+
+
+class OffsetResponse(_ApiModel):
+    offset: float
+    queried_at: datetime
+    source_count: Annotated[int, Field(ge=1)]
+
+
+class SyncResponse(_ApiModel):
+    status: CheckStatus
+    initial_offset: float
+    final_offset: float
+    correction_attempted: bool
+    checked_at: datetime
+    synced_at: datetime | None
 
 
 class StatusResponse(_ApiModel):
@@ -215,9 +273,18 @@ class _ManagerProtocol(Protocol):
 
     def stop(self, timeout: float | None = None) -> WorkerSnapshot: ...
 
+    def check_once(self) -> SyncResult: ...
+
+    def measure_once(self) -> NTPQueryResult: ...
+
     def set_cycle(self, seconds: float) -> WorkerSnapshot: ...
 
     def set_thresh(self, seconds: float) -> WorkerSnapshot: ...
+
+    def set_max_correction(
+        self,
+        seconds: float | None,
+    ) -> WorkerSnapshot: ...
 
 
 CloseAuthorizer = Callable[[Request], bool]
@@ -253,6 +320,22 @@ class _ApiLifecycle:
     def stop(self) -> WorkerSnapshot:
         with self._lock:
             return self._manager.stop()
+
+    def sync_once(self) -> SyncResult:
+        with self._lock:
+            if self._closing:
+                raise _ApiLifecycleConflictError(
+                    "the management server is already closing"
+                )
+            return self._manager.check_once()
+
+    def measure_once(self) -> NTPQueryResult:
+        with self._lock:
+            if self._closing:
+                raise _ApiLifecycleConflictError(
+                    "the management server is already closing"
+                )
+            return self._manager.measure_once()
 
     def close(self) -> WorkerSnapshot:
         with self._lock:
@@ -290,6 +373,17 @@ class _ApiLifecycle:
                     "the management server is already closing"
                 )
             return self._manager.set_thresh(seconds)
+
+    def set_max_correction(
+        self,
+        seconds: float | None,
+    ) -> WorkerSnapshot:
+        with self._lock:
+            if self._closing:
+                raise _ApiLifecycleConflictError(
+                    "the management server is already closing"
+                )
+            return self._manager.set_max_correction(seconds)
 
     def cleanup(self) -> WorkerSnapshot:
         with self._lock:
@@ -357,6 +451,38 @@ def _lifecycle(request: Request) -> _ApiLifecycle:
     return cast(_ApiLifecycle, request.app.state.ntp_anchor_lifecycle)
 
 
+def _require_correction_privilege(request: Request) -> None:
+    check = cast(
+        TimeSyncPrivilegeCheck,
+        request.app.state.ntp_anchor_time_sync_privilege,
+    )
+    if check.correction_available:
+        return
+    logger.warning(
+        "privileged management operation rejected path=%s privilege_status=%s "
+        "detection_error_type=%s",
+        request.url.path,
+        check.status.value,
+        check.error_type,
+    )
+    raise HTTPException(status_code=503, detail=_CORRECTION_PRIVILEGE_DETAIL)
+
+
+def _log_correction_privilege(check: TimeSyncPrivilegeCheck) -> None:
+    if check.status is TimeSyncPrivilegeStatus.UNAVAILABLE:
+        logger.warning(
+            "clock-correction endpoints disabled; process lacks required host "
+            "privileges; read-only management endpoints remain available"
+        )
+    elif check.status is TimeSyncPrivilegeStatus.UNKNOWN:
+        logger.warning(
+            "clock-correction privilege detection failed error_type=%s; "
+            "treating capability as unavailable; read-only management endpoints "
+            "remain available",
+            check.error_type,
+        )
+
+
 def _ping_route() -> PingResponse:
     return PingResponse(status="pong")
 
@@ -367,6 +493,7 @@ def _help_route(request: Request) -> HelpResponse:
 
 
 def _start_route(request: Request) -> RunningResponse:
+    _require_correction_privilege(request)
     try:
         snapshot = _lifecycle(request).start()
     except WorkerStateError as error:
@@ -422,6 +549,44 @@ def _status_route(request: Request) -> StatusResponse:
     return StatusResponse.from_snapshot(_lifecycle(request).snapshot())
 
 
+def _sync_route(request: Request) -> SyncResponse:
+    _require_correction_privilege(request)
+    logger.info("manual NTP synchronization check requested")
+    try:
+        result = _lifecycle(request).sync_once()
+    except WorkerStateError as error:
+        logger.warning("manual NTP synchronization rejected; operation busy")
+        raise HTTPException(
+            status_code=409,
+            detail="Another NTP or time-service operation is already active.",
+        ) from error
+    return SyncResponse(
+        status=result.status,
+        initial_offset=result.measurement.offset,
+        final_offset=result.measured_offset,
+        correction_attempted=result.correction_attempted,
+        checked_at=result.checked_at,
+        synced_at=result.synced_at,
+    )
+
+
+def _offset_route(request: Request) -> OffsetResponse:
+    logger.info("manual NTP offset measurement requested")
+    try:
+        result = _lifecycle(request).measure_once()
+    except WorkerStateError as error:
+        logger.warning("manual NTP offset measurement rejected; operation busy")
+        raise HTTPException(
+            status_code=409,
+            detail="Another NTP or time-service operation is already active.",
+        ) from error
+    return OffsetResponse(
+        offset=result.offset,
+        queried_at=result.queried_at,
+        source_count=len(result.measurements),
+    )
+
+
 def _set_cycle_route(payload: CycleRequest, request: Request) -> CycleResponse:
     snapshot = _lifecycle(request).set_cycle(payload.cycle)
     return CycleResponse(cycle=snapshot.cycle, is_running=snapshot.is_running)
@@ -429,15 +594,38 @@ def _set_cycle_route(payload: CycleRequest, request: Request) -> CycleResponse:
 
 def _set_thresh_route(payload: ThreshRequest, request: Request) -> ThreshResponse:
     lifecycle = _lifecycle(request)
-    if payload.thresh > lifecycle.manager.config.max_correction:
-        raise ConfigurationError(
-            "thresh cannot exceed the configured maximum correction"
-        )
     snapshot = lifecycle.set_thresh(payload.thresh)
     return ThreshResponse(thresh=snapshot.thresh, is_running=snapshot.is_running)
 
 
-def _route_definitions(max_correction: float) -> tuple[_RouteDefinition, ...]:
+def _set_max_correction_route(
+    payload: MaxCorrectionRequest,
+    request: Request,
+) -> MaxCorrectionResponse:
+    if payload.max_correction == -1.0:
+        if not request.app.state.ntp_anchor_allow_unbounded_correction:
+            logger.warning(
+                "unbounded correction update rejected; startup opt-in is disabled"
+            )
+            raise HTTPException(
+                status_code=403,
+                detail="Unbounded correction is disabled by server policy.",
+            )
+        value: float | None = None
+    else:
+        value = payload.max_correction
+
+    snapshot = _lifecycle(request).set_max_correction(value)
+    return MaxCorrectionResponse(
+        max_correction=value,
+        max_correction_enabled=value is not None,
+        is_running=snapshot.is_running,
+    )
+
+
+def _route_definitions(
+    allow_unbounded_correction: bool,
+) -> tuple[_RouteDefinition, ...]:
     no_parameters: tuple[HelpParameter, ...] = ()
     cycle_parameters = (
         HelpParameter(
@@ -461,7 +649,21 @@ def _route_definitions(max_correction: float) -> tuple[_RouteDefinition, ...]:
             constraints={
                 "finite": True,
                 "minimum": 0.0,
-                "maximum": max_correction,
+                "bounded_by_current_max_correction": True,
+            },
+        ),
+    )
+    max_correction_parameters = (
+        HelpParameter(
+            name="max_correction",
+            location="body",
+            required=True,
+            type="number",
+            constraints={
+                "finite": True,
+                "minimum": 0.0,
+                "unbounded_sentinel": -1.0,
+                "unbounded_allowed": allow_unbounded_correction,
             },
         ),
     )
@@ -525,6 +727,24 @@ def _route_definitions(max_correction: float) -> tuple[_RouteDefinition, ...]:
             StatusResponse,
         ),
         (
+            "sync",
+            "/sync",
+            "POST",
+            no_parameters,
+            "Run one policy-controlled NTP check and correction if needed.",
+            _sync_route,
+            SyncResponse,
+        ),
+        (
+            "offset",
+            "/offset",
+            "POST",
+            no_parameters,
+            "Measure a fresh consensus offset without changing the clock.",
+            _offset_route,
+            OffsetResponse,
+        ),
+        (
             "set_cycle",
             "/set-cycle",
             "POST",
@@ -541,6 +761,15 @@ def _route_definitions(max_correction: float) -> tuple[_RouteDefinition, ...]:
             "Update the clock-drift threshold for the next check.",
             _set_thresh_route,
             ThreshResponse,
+        ),
+        (
+            "set_max_correction",
+            "/set-max-correction",
+            "POST",
+            max_correction_parameters,
+            "Update the optional maximum correction for the next check.",
+            _set_max_correction_route,
+            MaxCorrectionResponse,
         ),
     )
     return tuple(
@@ -565,29 +794,6 @@ def _route_definitions(max_correction: float) -> tuple[_RouteDefinition, ...]:
             response_model,
         ) in entries
     )
-
-
-def _add_openapi_threshold_bound(app: FastAPI, maximum: float) -> None:
-    """Keep the generated threshold schema aligned with injected policy."""
-
-    original_openapi = app.openapi
-
-    def openapi() -> dict[str, Any]:
-        schema = original_openapi()
-        components = schema.get("components")
-        if isinstance(components, dict):
-            schemas = components.get("schemas")
-            if isinstance(schemas, dict):
-                request_schema = schemas.get("ThreshRequest")
-                if isinstance(request_schema, dict):
-                    properties = request_schema.get("properties")
-                    if isinstance(properties, dict):
-                        threshold = properties.get("thresh")
-                        if isinstance(threshold, dict):
-                            threshold["maximum"] = maximum
-        return schema
-
-    setattr(app, "openapi", openapi)
 
 
 def _register_exception_handler(
@@ -670,6 +876,25 @@ async def _timeout_error_handler(
     )
 
 
+async def _unsafe_correction_handler(
+    request: Request,
+    error: UnsafeCorrectionError,
+) -> JSONResponse:
+    logger.warning(
+        "management correction rejected by safety policy method=%s path=%s "
+        "error_type=%s",
+        request.method,
+        request.url.path,
+        type(error).__name__,
+    )
+    return JSONResponse(
+        status_code=409,
+        content={
+            "detail": "Clock correction is prohibited by the current safety policy."
+        },
+    )
+
+
 async def _unavailable_error_handler(
     request: Request,
     error: NTPAnchorError,
@@ -729,13 +954,17 @@ def create_app(
     shutdown_callback: Callable[[], None],
     *,
     close_authorizer: CloseAuthorizer | None = None,
+    allow_unbounded_correction: bool = False,
+    time_sync_privilege: TimeSyncPrivilegeCheck | None = None,
 ) -> FastAPI:
     """Create the management API around one injected manager.
 
     The returned application does not auto-start the synchronization worker.
     The default close policy accepts loopback peers only; an authenticated
     deployment can inject a narrower trusted policy. :func:`run_server`
-    enforces a loopback-only bind for this initial implementation.
+    enforces a loopback-only bind for this initial implementation. When no
+    privilege result is injected, the application detects and caches one before
+    serving requests.
     """
 
     if manager is None:
@@ -744,6 +973,17 @@ def create_app(
         raise TypeError("shutdown_callback must be callable")
     if close_authorizer is not None and not callable(close_authorizer):
         raise TypeError("close_authorizer must be callable")
+    allow_unbounded = _validate_allow_unbounded_correction(allow_unbounded_correction)
+    if manager.config.max_correction is None and not allow_unbounded:
+        raise ConfigurationError(
+            "an unbounded manager requires explicit server authorization"
+        )
+    if time_sync_privilege is None:
+        privilege_check = _detect_time_sync_privilege()
+    elif isinstance(time_sync_privilege, TimeSyncPrivilegeCheck):
+        privilege_check = time_sync_privilege
+    else:
+        raise TypeError("time_sync_privilege must be a TimeSyncPrivilegeCheck")
 
     lifecycle = _ApiLifecycle(cast(_ManagerProtocol, manager))
     shutdown = _OnceCallback(shutdown_callback)
@@ -778,8 +1018,11 @@ def create_app(
     app.state.ntp_anchor_lifecycle = lifecycle
     app.state.ntp_anchor_shutdown = shutdown
     app.state.ntp_anchor_close_authorizer = authorize_close
+    app.state.ntp_anchor_allow_unbounded_correction = allow_unbounded
+    app.state.ntp_anchor_time_sync_privilege = privilege_check
+    _log_correction_privilege(privilege_check)
 
-    route_definitions = _route_definitions(manager.config.max_correction)
+    route_definitions = _route_definitions(allow_unbounded)
     app.state.ntp_anchor_routes = tuple(item.help for item in route_definitions)
     for definition in route_definitions:
         app.add_api_route(
@@ -808,6 +1051,11 @@ def create_app(
     _register_exception_handler(app, TimeServiceTimeoutError, _timeout_error_handler)
     _register_exception_handler(
         app,
+        UnsafeCorrectionError,
+        _unsafe_correction_handler,
+    )
+    _register_exception_handler(
+        app,
         TimeServiceUnavailableError,
         _unavailable_error_handler,
     )
@@ -821,7 +1069,6 @@ def create_app(
     _register_exception_handler(app, UnexpectedError, _unexpected_error_handler)
     _register_exception_handler(app, NTPAnchorError, _unavailable_error_handler)
     _register_exception_handler(app, Exception, _unexpected_error_handler)
-    _add_openapi_threshold_bound(app, manager.config.max_correction)
     return app
 
 
@@ -917,6 +1164,7 @@ def run_server(
     reload: bool = False,
     log_file: str = DEFAULT_API_LOG_FILE,
     log_level: str = DEFAULT_API_LOG_LEVEL,
+    allow_unbounded_correction: bool = False,
 ) -> None:
     """Run one Uvicorn server using a retained, pre-bound loopback socket."""
 
@@ -925,18 +1173,27 @@ def run_server(
     validated_host = _validate_host(host)
     validated_port = _validate_port(port)
     validated_log_level = _validate_log_level(log_level)
+    allow_unbounded = _validate_allow_unbounded_correction(allow_unbounded_correction)
     _validate_server_mode(workers, reload)
     if manager.snapshot().is_running:
         raise WorkerStateError(
             "the sync manager must be stopped before the API server starts"
         )
+    if manager.config.max_correction is None and not allow_unbounded:
+        raise ConfigurationError(
+            "an unbounded manager requires explicit server authorization"
+        )
+    privilege_check = _detect_time_sync_privilege()
     log_path = configure_service_logging(validated_log_level, log_file)
     logger.info(
-        "management service starting version=%s host=%s port=%d log_file=%s",
+        "management service starting version=%s host=%s port=%d log_file=%s "
+        "allow_unbounded_correction=%s time_sync_privilege=%s",
         __version__,
         validated_host,
         validated_port,
         log_path,
+        allow_unbounded,
+        privilege_check.status.value,
     )
     try:
         listener = bind_server_socket(validated_host, validated_port)
@@ -968,7 +1225,12 @@ def run_server(
     server_error: BaseException | None = None
 
     try:
-        app = create_app(manager, shutdown.request_shutdown)
+        app = create_app(
+            manager,
+            shutdown.request_shutdown,
+            allow_unbounded_correction=allow_unbounded,
+            time_sync_privilege=privilege_check,
+        )
         config = uvicorn.Config(
             app=app,
             host=validated_host,
@@ -1034,13 +1296,19 @@ __all__ = [
     "HelpParameter",
     "HelpResponse",
     "MAX_CYCLE_SECONDS",
+    "MaxCorrectionRequest",
+    "MaxCorrectionResponse",
+    "OffsetResponse",
     "PingResponse",
     "PortInUseError",
     "RouteHelp",
     "RunningResponse",
     "StatusResponse",
+    "SyncResponse",
     "ThreshRequest",
     "ThreshResponse",
+    "TimeSyncPrivilegeCheck",
+    "TimeSyncPrivilegeStatus",
     "UvicornShutdownAdapter",
     "bind_server_socket",
     "create_app",

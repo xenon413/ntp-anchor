@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+import ctypes
 import logging
 import math
 import re
@@ -11,9 +12,34 @@ import time
 from .base_time_sync import BaseTimeSync, normalize_sync_servers
 from .command_runner import CommandResult, CommandRunner
 from .exceptions import TimeServiceCommandError, TimeServiceTimeoutError
+from .privileges import TimeSyncPrivilegeCheck, TimeSyncPrivilegeStatus
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_user_an_admin() -> bool:
+    """Return whether the current Windows process token is elevated."""
+
+    windll = getattr(ctypes, "windll")
+    return bool(windll.shell32.IsUserAnAdmin())
+
+
+def detect_time_sync_privilege() -> TimeSyncPrivilegeCheck:
+    """Detect Windows elevation without prompting or changing process state."""
+
+    try:
+        is_elevated = _is_user_an_admin()
+    except Exception as error:
+        return TimeSyncPrivilegeCheck(
+            TimeSyncPrivilegeStatus.UNKNOWN,
+            error_type=type(error).__name__,
+        )
+    return TimeSyncPrivilegeCheck(
+        TimeSyncPrivilegeStatus.AVAILABLE
+        if is_elevated
+        else TimeSyncPrivilegeStatus.UNAVAILABLE
+    )
 
 
 class WindowsTimeSync(BaseTimeSync):
@@ -129,13 +155,13 @@ class WindowsTimeSync(BaseTimeSync):
         if servers is not None:
             selected_servers = normalize_sync_servers(servers)
             self._configure_peers(selected_servers)
-
+        # logger.debug("sync time")
         status = self.runner.run(
             "w32tm.exe",
             ("/resync",),
             permission_returncodes=(5, 0x80070005, -2147024891),
         )
-
+        # logger.debug(f"time sync status: {status}")
         # Exit status is the primary signal. These stable legacy fragments
         # catch versions of w32tm known to report a failure with exit code 0;
         # the manager's post-sync NTP verification remains authoritative.
@@ -154,9 +180,13 @@ class WindowsTimeSync(BaseTimeSync):
     def prepare_time_sync(self, servers: Sequence[str]) -> None:
         """Start w32time, then align its peer list with measured inliers."""
 
+        # ---- varified in run time ----
+        logger.debug("start prepared time sync")
         selected_servers = normalize_sync_servers(servers)
         self.start_time_service()
         self._configure_peers(selected_servers)
+        logger.debug("prepared time sync complete")
+        # ------------------------------
 
     def _configure_peers(self, servers: Sequence[str]) -> None:
         peer_list = " ".join(f"{server},0x8" for server in servers)
@@ -188,8 +218,7 @@ class WindowsTimeSync(BaseTimeSync):
             return int(match.group(1))
 
         candidates = {
-            int(match.group(1))
-            for match in cls._NUMERIC_STATE_PATTERN.finditer(output)
+            int(match.group(1)) for match in cls._NUMERIC_STATE_PATTERN.finditer(output)
         }
         if len(candidates) == 1:
             return candidates.pop()

@@ -106,9 +106,7 @@ def _validate_hostname(value: str) -> str:
     if not server:
         raise ConfigurationError("NTP server names cannot be empty")
     if server != value:
-        raise ConfigurationError(
-            "NTP server names cannot have surrounding whitespace"
-        )
+        raise ConfigurationError("NTP server names cannot have surrounding whitespace")
     if any(character.isspace() or ord(character) < 32 for character in server):
         raise ConfigurationError(f"invalid NTP server name: {server!r}")
     if "://" in server or "/" in server or "@" in server:
@@ -185,7 +183,7 @@ class SyncConfig:
     max_dispersion: float = 1.0
     max_reference_age: float = 86_400.0
     max_sample_deviation: float = 0.25
-    max_correction: float = 5.0
+    max_correction: float | None = 5.0
     max_stratum: int = 15
     verification_attempts: int = 3
     verification_interval: float = 0.25
@@ -227,7 +225,6 @@ class SyncConfig:
             ("max_dispersion", 0.0, None, True),
             ("max_reference_age", 0.0, None, True),
             ("max_sample_deviation", 0.0, None, True),
-            ("max_correction", 0.0, None, True),
             ("verification_interval", 0.0, None, True),
             ("command_timeout", 0.0, None, False),
             ("retry_base_delay", 0.0, None, False),
@@ -251,10 +248,21 @@ class SyncConfig:
         # Store normalized servers and enforce the remaining invariants.
         object.__setattr__(self, "servers", normalized_servers)
 
+        if self.max_correction is not None:
+            object.__setattr__(
+                self,
+                "max_correction",
+                _finite_float(
+                    self.max_correction,
+                    name="max_correction",
+                    minimum=0.0,
+                ),
+            )
+
         if not isinstance(self.auto_start_service, bool):
             raise ConfigurationError("auto_start_service must be a Boolean")
 
-        if self.max_correction < self.thresh:
+        if self.max_correction is not None and self.max_correction < self.thresh:
             raise ConfigurationError(
                 "max_correction must be greater than or equal to thresh"
             )
@@ -273,6 +281,11 @@ class SyncConfig:
         """Return a validated copy with a new drift threshold."""
 
         return replace(self, thresh=seconds)
+
+    def with_max_correction(self, seconds: float | None) -> SyncConfig:
+        """Return a validated copy with a new optional correction limit."""
+
+        return replace(self, max_correction=seconds)
 
 
 __all__ = ["DEFAULT_NTP_SERVERS", "SyncConfig"]

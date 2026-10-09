@@ -2,6 +2,7 @@ import subprocess
 
 import pytest
 
+from ntp_anchor.core import darwin_time_sync
 from ntp_anchor.core.darwin_time_sync import DarwinTimeSync
 from ntp_anchor.core.exceptions import (
     TimeServiceCommandError,
@@ -9,6 +10,7 @@ from ntp_anchor.core.exceptions import (
     TimeServiceTimeoutError,
     TimeServiceUnavailableError,
 )
+from ntp_anchor.core.privileges import TimeSyncPrivilegeStatus
 
 
 class FakeRunner:
@@ -37,6 +39,46 @@ class FakeRunner:
             stdout="",
             stderr="",
         )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("effective_user_id", "expected"),
+    [
+        (0, TimeSyncPrivilegeStatus.AVAILABLE),
+        (501, TimeSyncPrivilegeStatus.UNAVAILABLE),
+    ],
+)
+def test_darwin_privilege_detection(
+    monkeypatch: pytest.MonkeyPatch,
+    effective_user_id: int,
+    expected: TimeSyncPrivilegeStatus,
+) -> None:
+    monkeypatch.setattr(
+        darwin_time_sync,
+        "_effective_user_id",
+        lambda: effective_user_id,
+    )
+
+    result = darwin_time_sync.detect_time_sync_privilege()
+
+    assert result.status is expected
+    assert result.error_type is None
+
+
+@pytest.mark.unit
+def test_darwin_privilege_detection_failure_is_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail() -> int:
+        raise OSError("private detection detail")
+
+    monkeypatch.setattr(darwin_time_sync, "_effective_user_id", fail)
+
+    result = darwin_time_sync.detect_time_sync_privilege()
+
+    assert result.status is TimeSyncPrivilegeStatus.UNKNOWN
+    assert result.error_type == "OSError"
 
 
 @pytest.mark.unit

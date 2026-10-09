@@ -174,7 +174,9 @@ class SyncManager:
         with self._lifecycle_operation_lock:
             with self._condition:
                 if self._thread is not None and self._thread.is_alive():
-                    logger.debug("NTP sync worker start ignored; worker is already running")
+                    logger.debug(
+                        "NTP sync worker start ignored; worker is already running"
+                    )
                     return self.snapshot()
 
                 self._lifecycle = LifecycleState.STARTING
@@ -215,7 +217,9 @@ class SyncManager:
                 if worker is None or not worker.is_alive():
                     self._thread = None
                     self._lifecycle = LifecycleState.STOPPED
-                    logger.debug("NTP sync worker stop ignored; worker is already stopped")
+                    logger.debug(
+                        "NTP sync worker stop ignored; worker is already stopped"
+                    )
                     return self.snapshot()
 
                 self._lifecycle = LifecycleState.STOPPING
@@ -269,6 +273,22 @@ class SyncManager:
             "NTP drift threshold updated previous=%.6f current=%.6f running=%s",
             previous,
             snapshot.thresh,
+            snapshot.is_running,
+        )
+        return snapshot
+
+    def set_max_correction(self, seconds: float | None) -> WorkerSnapshot:
+        """Atomically update the correction guard used by the next check."""
+
+        with self._state_lock:
+            previous = self._config.max_correction
+            updated = self._config.with_max_correction(seconds)
+            self._config = updated
+            snapshot = self.snapshot()
+        logger.warning(
+            "NTP maximum correction updated previous=%s current=%s running=%s",
+            "unbounded" if previous is None else f"{previous:.6f}",
+            "unbounded" if seconds is None else f"{seconds:.6f}",
             snapshot.is_running,
         )
         return snapshot
@@ -366,10 +386,11 @@ class SyncManager:
                     correction_attempted=False,
                 )
 
-            if abs(measurement.offset) > operation_config.max_correction:
+            max_correction = operation_config.max_correction
+            if max_correction is not None and abs(measurement.offset) > max_correction:
                 error = UnsafeCorrectionError(
                     measurement.offset,
-                    operation_config.max_correction,
+                    max_correction,
                 )
                 self._finish_failure(
                     CheckStatus.UNSAFE_CORRECTION,
@@ -378,26 +399,28 @@ class SyncManager:
                 )
                 raise error
 
-            correction_servers = tuple(
-                item.server
-                for item in measurement.measurements
-                if abs(item.offset) <= operation_config.max_correction
-            )
-            if len(correction_servers) < operation_config.quorum:
-                unsafe_offset = max(
-                    measurement.measurements,
-                    key=lambda item: abs(item.offset),
-                ).offset
-                error = UnsafeCorrectionError(
-                    unsafe_offset,
-                    operation_config.max_correction,
+            correction_servers = measurement.servers
+            if max_correction is not None:
+                correction_servers = tuple(
+                    item.server
+                    for item in measurement.measurements
+                    if abs(item.offset) <= max_correction
                 )
-                self._finish_failure(
-                    CheckStatus.UNSAFE_CORRECTION,
-                    error,
-                    offset=measurement.offset,
-                )
-                raise error
+                if len(correction_servers) < operation_config.quorum:
+                    unsafe_offset = max(
+                        measurement.measurements,
+                        key=lambda item: abs(item.offset),
+                    ).offset
+                    error = UnsafeCorrectionError(
+                        unsafe_offset,
+                        max_correction,
+                    )
+                    self._finish_failure(
+                        CheckStatus.UNSAFE_CORRECTION,
+                        error,
+                        offset=measurement.offset,
+                    )
+                    raise error
 
             if operation_config.ntp_port != 123:
                 error = TimeServiceUnavailableError(
@@ -448,6 +471,7 @@ class SyncManager:
     ) -> SyncResult:
         latest: NTPQueryResult | None = None
         last_error: Exception | None = None
+        # why would i need multipule attempts
         for attempt in range(operation_config.verification_attempts):
             self._raise_if_stopping(
                 stop_event,
@@ -475,14 +499,13 @@ class SyncManager:
                     CheckStatus.VERIFICATION_FAILED,
                     error,
                     offset=(
-                        latest.offset
-                        if latest is not None
-                        else measurement.offset
+                        latest.offset if latest is not None else measurement.offset
                     ),
                 )
                 raise
 
             self._raise_if_stopping(stop_event, latest.offset)
+            # the only verification success point
             if abs(latest.offset) <= operation_config.thresh:
                 checked_at = self._finish_success(
                     CheckStatus.SYNC_SUCCEEDED,
@@ -537,7 +560,7 @@ class SyncManager:
                 if succeeded:
                     self._wait_for_cycle(completed_at, stop_event)
                 else:
-                    self._wait_for_backoff(stop_event)
+                    self._wait_for_backoff(stop_event)  # backoff with no max retry
         except BaseException as error:
             fatal_error = error
             with self._condition:
@@ -575,8 +598,8 @@ class SyncManager:
             exponent = min(failures - 1, 30)
             base = min(config.retry_max_delay, config.retry_base_delay * (2**exponent))
             random_value = min(1.0, max(0.0, float(self._random())))
-            multiplier = 1.0 - config.retry_jitter + (
-                2.0 * config.retry_jitter * random_value
+            multiplier = (
+                1.0 - config.retry_jitter + (2.0 * config.retry_jitter * random_value)
             )
             delay = min(config.retry_max_delay, base * multiplier)
             logger.debug(
@@ -666,6 +689,7 @@ class SyncManager:
         *,
         offset: float | None,
     ) -> None:
+        """record failure information"""
         checked_at = self._aware_utc_now()
         with self._state_lock:
             self._last_checked_at = checked_at
