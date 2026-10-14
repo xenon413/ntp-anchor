@@ -6,16 +6,16 @@ from collections.abc import Sequence
 import logging
 import os
 
-from .base_time_sync import BaseTimeSync, normalize_sync_servers
+from .base import BaseTimeSync, normalize_sync_servers
 from .command_runner import CommandRunner
-from .exceptions import (
+from ..exceptions import (
     NTPAnchorError,
     TimeServiceCommandError,
     TimeServicePermissionError,
     TimeServiceTimeoutError,
     TimeServiceUnavailableError,
 )
-from .privileges import TimeSyncPrivilegeCheck, TimeSyncPrivilegeStatus
+from ..privileges import TimeSyncPrivilegeCheck, TimeSyncPrivilegeStatus
 
 
 logger = logging.getLogger(__name__)

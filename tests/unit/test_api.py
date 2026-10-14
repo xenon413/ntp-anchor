@@ -207,6 +207,50 @@ def test_ping_is_exact_and_side_effect_free() -> None:
     assert manager.stop_calls == 0
 
 
+@pytest.mark.parametrize(
+    "privilege",
+    [
+        CORRECTION_ALLOWED,
+        TimeSyncPrivilegeCheck(TimeSyncPrivilegeStatus.UNAVAILABLE),
+        TimeSyncPrivilegeCheck(
+            TimeSyncPrivilegeStatus.UNKNOWN,
+            error_type="OSError",
+        ),
+    ],
+)
+def test_timestamp_reads_fresh_system_time_without_manager_operations(
+    monkeypatch: pytest.MonkeyPatch,
+    privilege: TimeSyncPrivilegeCheck,
+) -> None:
+    manager = FakeManager()
+    original = _snapshot(is_running=True, last_checked_at=NOW)
+    manager.publish(original)
+    original_config = manager.config
+    client = _client(manager, time_sync_privilege=privilege)
+    # A corrected system clock can move backward, including before the epoch.
+    values = (1_700_000_001.25, 1_700_000_000.5, -0.5)
+    clock = iter(values)
+    monkeypatch.setattr(api_module, "_timestamp", lambda: next(clock))
+
+    for expected in values:
+        response = client.get("/timestamp")
+
+        assert response.status_code == 200
+        assert response.json() == {"timestamp": expected}
+        assert response.headers["cache-control"] == "no-store"
+
+    assert manager.snapshot_calls == 0
+    assert manager.start_calls == 0
+    assert manager.stop_calls == 0
+    assert manager.check_once_calls == 0
+    assert manager.measure_once_calls == 0
+    assert manager.set_cycle_calls == 0
+    assert manager.set_thresh_calls == 0
+    assert manager.set_max_correction_calls == 0
+    assert manager.config == original_config
+    assert manager.snapshot() == original
+
+
 def test_help_matches_every_management_route_and_constraint() -> None:
     manager = FakeManager(max_correction=7.5)
     app = create_app(manager, lambda: None)  # type: ignore[arg-type]
@@ -218,6 +262,7 @@ def test_help_matches_every_management_route_and_constraint() -> None:
     routes = response.json()["routes"]
     expected = [
         ("/ping", "GET"),
+        ("/timestamp", "GET"),
         ("/help", "GET"),
         ("/start", "POST"),
         ("/end", "POST"),
@@ -270,6 +315,28 @@ def test_help_matches_every_management_route_and_constraint() -> None:
         if route.path in by_path
     }
     assert actual == set(expected)
+    schema = client.get("/openapi.json").json()
+    assert {
+        (path, method.upper())
+        for path, methods in schema["paths"].items()
+        for method in methods
+    } == set(expected)
+
+
+def test_openapi_describes_timestamp_in_epoch_seconds() -> None:
+    schema = _client(FakeManager()).get("/openapi.json").json()
+
+    response = schema["paths"]["/timestamp"]["get"]["responses"]["200"]
+    assert response["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/TimestampResponse"
+    }
+    timestamp = schema["components"]["schemas"]["TimestampResponse"]
+    assert timestamp["required"] == ["timestamp"]
+    assert set(timestamp["properties"]) == {"timestamp"}
+    field = timestamp["properties"]["timestamp"]
+    assert field["type"] == "number"
+    assert "Unix epoch seconds" in field["description"]
+    assert "minimum" not in field
 
 
 def test_help_reports_when_unbounded_updates_are_authorized() -> None:
@@ -975,6 +1042,7 @@ def test_maximum_correction_cannot_be_lower_than_current_threshold() -> None:
     assert response.status_code == 422
     assert response.json() == {"detail": "The requested configuration is invalid."}
     assert manager.config.max_correction == pytest.approx(5.0)
+    assert manager.set_max_correction_calls == 0
 
 
 @pytest.mark.parametrize(
@@ -1115,22 +1183,29 @@ def test_unexpected_failure_returns_incident_without_sensitive_detail() -> None:
     assert "provider.exe" not in response.text
 
 
-def test_ping_remains_responsive_while_stop_is_blocked() -> None:
+def test_ping_and_timestamp_remain_responsive_while_stop_is_blocked(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     manager = FakeManager()
     manager.start()
     manager.stop_entered = threading.Event()
     manager.stop_release = threading.Event()
     client = _client(manager)
+    monkeypatch.setattr(api_module, "_timestamp", lambda: 1_700_000_000.25)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
         pending_stop = executor.submit(client.post, "/end")
         assert manager.stop_entered.wait(1.0)
 
-        ping = client.get("/ping")
-        assert ping.status_code == 200
-        assert ping.json() == {"status": "pong"}
-
-        manager.stop_release.set()
+        try:
+            ping = client.get("/ping")
+            assert ping.status_code == 200
+            assert ping.json() == {"status": "pong"}
+            timestamp = client.get("/timestamp")
+            assert timestamp.status_code == 200
+            assert timestamp.json() == {"timestamp": 1_700_000_000.25}
+        finally:
+            manager.stop_release.set()
         assert pending_stop.result(timeout=2.0).status_code == 200
 
 

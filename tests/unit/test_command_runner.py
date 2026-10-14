@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from ntp_anchor.core.command_runner import CommandRunner
+from ntp_anchor.core.backends.command_runner import CommandRunner
 from ntp_anchor.core.exceptions import (
     TimeServiceCommandError,
     TimeServicePermissionError,

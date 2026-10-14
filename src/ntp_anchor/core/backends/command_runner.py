@@ -18,7 +18,7 @@ import subprocess
 import threading
 from typing import BinaryIO, TypeAlias
 
-from .exceptions import (
+from ..exceptions import (
     TimeServiceCommandError,
     TimeServicePermissionError,
     TimeServiceTimeoutError,

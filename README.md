@@ -76,10 +76,28 @@ Git-based deployments must similarly record and install a reviewed full
 
 ## Core API
 
-New code should construct and own a `SyncManager`. The module-level helpers are
-retained as compatibility adapters around one lazy process-local manager.
+New code that needs synchronization should construct and own a `SyncManager`.
+The module-level synchronization helpers are retained as compatibility adapters
+around one lazy process-local manager. `timestamp()` reads the system clock
+independently of that manager.
 Importing `ntp_anchor` does not query the network, select a platform backend,
 start a thread, bind a socket, or modify the clock.
+
+### Current system timestamp
+
+```python
+from ntp_anchor import timestamp
+
+current = timestamp()
+print(current)  # e.g. 1700000000.125 (Unix epoch seconds)
+```
+
+`timestamp() -> float` reads the current system wall clock as seconds since
+`1970-01-01T00:00:00Z`, including fractional seconds. It needs no network access,
+administrator rights, running worker, or API extra. Every call reads the clock
+again; it does not query NTP, apply a stored offset, or guarantee that the system
+clock is synchronized. System clock corrections can move the value backward;
+use `time.monotonic()` when measuring elapsed durations.
 
 ### Read-only measurement
 
@@ -138,6 +156,7 @@ The principal public contracts are:
 
 | API | Result |
 | --- | --- |
+| `timestamp()` | Current system time as floating-point Unix epoch seconds; no manager or NTP query. |
 | `SyncManager(config, backend=...)` | An explicitly owned, injectable controller. Without a backend or backend factory it remains measurement-only. |
 | `create_sync_manager(config)` | An explicitly owned controller with lazy selection of the current operating-system backend. |
 | `manager.measure_once()` | `NTPQueryResult`; performs no correction. |
@@ -383,6 +402,69 @@ the service is not elevated, it remains available in read-only mode and logs a
 startup warning. If privilege detection itself fails, the service logs the
 unknown status and treats correction as unavailable.
 
+### Docker deployment
+
+The supplied image has two build targets:
+
+- `runtime` is the default. It runs as UID `65532`, contains no clock-setting
+  utility, and supports the read-only management routes such as `/ping`,
+  `/status`, and `/offset`.
+- `correction` installs Debian's `ntpsec-ntpdate` provider and is selected only
+  by `compose.correction.yaml`. That override runs as UID `0` and adds only the
+  Linux `SYS_TIME` capability after the base configuration drops all
+  capabilities.
+
+The API deliberately accepts loopback binds only. Consequently, the Compose
+configuration uses host networking and does not publish any ports. Do not add
+`ports:` or change the API host to `0.0.0.0`; the service has no authentication
+or TLS. Native Linux Docker Engine is the supported deployment target. Docker
+Desktop runs Linux containers inside a VM, so a container cannot correct the
+physical Windows or macOS host clock; run ntp-anchor natively on those systems
+when host correction is required.
+
+Copy and review the example configuration, validate the rendered Compose file,
+and start the safe read-only target:
+
+```console
+cp .env.example .env
+docker compose config --quiet
+docker compose up --build --detach
+curl -s http://127.0.0.1:8000/ping
+curl -s -X POST http://127.0.0.1:8000/offset
+```
+
+For a native, rootful Linux Docker Engine whose host clock this service is
+explicitly authorized to change, add the correction override:
+
+```console
+docker compose -f compose.yaml -f compose.correction.yaml config --quiet
+docker compose -f compose.yaml -f compose.correction.yaml \
+  up --build --detach
+curl -s -X POST http://127.0.0.1:8000/start
+```
+
+`SYS_TIME` permits changing the Docker host's system clock. Never replace the
+narrow capability with `privileged: true`, and do not mount the Docker socket,
+host D-Bus, or host service-manager directories. Rootless or user-namespace
+remapped Docker cannot provide the required host-clock authority. Coordinate
+with any host NTP daemon so two controllers do not compete, and allow outbound
+DNS plus UDP port 123 to the configured authorities.
+
+The container always starts with the periodic worker stopped, including after
+a restart; `/ping` reports API liveness only. Call `/start` again when periodic
+correction is desired. Logs are written to stdout and the named
+`ntp-anchor-logs` volume. Inspect and stop the deployment with:
+
+```console
+docker compose logs --follow ntp-anchor
+docker compose -f compose.yaml -f compose.correction.yaml down
+```
+
+The image uses a floating Python 3.12 security-patch tag by default. Production
+builds can set `PYTHON_BASE_IMAGE` to a reviewed digest for reproducibility.
+Remote administration should retain loopback binding and use a controlled SSH
+tunnel instead of exposing the API port.
+
 ### Security boundary and port safety
 
 The built-in launcher accepts any explicit loopback IPv4 or IPv6 address, one
@@ -428,7 +510,8 @@ stable management-route inventory used by this package.
 | Method and path | Purpose | Side effect |
 | --- | --- | --- |
 | `GET /ping` | Liveness | None. |
-| `GET /help` | List the eleven management routes and constraints | None. |
+| `GET /timestamp` | Current server system time as Unix epoch seconds | None. |
+| `GET /help` | List the twelve management routes and constraints | None. |
 | `POST /start` | Start periodic checking | Creates at most one worker; requires cached correction privilege. |
 | `POST /end` | Gracefully stop periodic checking | Signals, wakes, and joins the worker. |
 | `POST /close` | Stop the worker and gracefully close Uvicorn | Terminates the management process after flushing the response. |
@@ -465,6 +548,25 @@ curl -s http://127.0.0.1:8000/ping
 {"status":"pong"}
 ```
 
+#### `GET /timestamp`
+
+Returns a fresh reading of the server's system clock as Unix epoch seconds,
+including fractional seconds. It takes no parameters, needs no correction
+privilege, and works with the worker stopped. It performs no NTP query and does
+not change worker state. Responses carry `Cache-Control: no-store`.
+
+```console
+curl -s http://127.0.0.1:8000/timestamp
+```
+
+```json
+{"timestamp":1700000000.125}
+```
+
+The value is sampled while the server handles the request, before response
+transit to the client. It uses the same `timestamp()` helper as the package;
+the unit is seconds, not milliseconds, and it reflects any system clock drift.
+
 #### `GET /help`
 
 Returns all management routes from the same registry used to register them.
@@ -479,6 +581,7 @@ curl -s http://127.0.0.1:8000/help
 {
   "routes": [
     {"path":"/ping","method":"GET","parameters":[],"description":"Check whether the management API is responsive."},
+    {"path":"/timestamp","method":"GET","parameters":[],"description":"Return the current system time as Unix epoch seconds."},
     {"path":"/help","method":"GET","parameters":[],"description":"List all management routes and their request constraints."},
     {"path":"/start","method":"POST","parameters":[],"description":"Start periodic NTP checking."},
     {"path":"/end","method":"POST","parameters":[],"description":"Gracefully stop periodic NTP checking."},
@@ -820,7 +923,7 @@ running/stopped state.
 Read-only measurement normally needs no elevation, but operating-system time
 services generally do. At startup, a non-elevated or unknown privilege result
 produces a server-side warning and leaves the API in read-only mode. `/start`
-and `/sync` then return `503` immediately; `/offset`, `/ping`, `/help`,
+and `/sync` then return `503` immediately; `/offset`, `/ping`, `/timestamp`, `/help`,
 `/status`, configuration setters, `/end`, and `/close` remain available.
 
 Restart the service from an elevated process to enable correction. The service
@@ -885,6 +988,19 @@ pytest -m "(integration or server_integration) and not live_network and not priv
 
 The third command isolates management API, CLI, and port-safety contract tests;
 the fourth isolates local integration and server-subprocess coverage.
+
+Each pytest run creates a unique `.pytest-tmp-<process-id>-<random-id>/`
+directory directly in the project root for its temporary test files. Cleanup
+runs after passing or failing tests and after collection errors, deleting only
+that run's directory. Separate directories prevent elevated and normal runs
+from sharing pytest's default temporary-directory state. They are ignored by
+Git and excluded from the Docker build context.
+
+Cleanup is best effort: forced termination or locked files can leave that
+run's directory behind, without blocking future runs. To keep temporary files
+for debugging, supply an explicit `--basetemp` with a dedicated disposable
+directory. Our cleanup leaves that path alone; pytest itself clears its
+contents when it first uses the directory.
 
 Ordinary `pytest` never opts into the public network or host clock mutation.
 To run live-network tests, supply the flag and environment acknowledgment:

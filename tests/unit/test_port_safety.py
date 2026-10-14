@@ -326,6 +326,7 @@ def test_run_server_validates_all_options_before_binding(
     with pytest.raises(ConfigurationError):
         api.run_server(manager, **options)  # type: ignore[arg-type]
 
+    manager.snapshot.assert_not_called()
     bind.assert_not_called()
     manager.stop.assert_not_called()
 

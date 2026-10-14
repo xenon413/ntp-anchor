@@ -5,8 +5,8 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 
-from .config import DEFAULT_NTP_SERVERS
-from .exceptions import ConfigurationError
+from ..config import DEFAULT_NTP_SERVERS
+from ..exceptions import ConfigurationError
 
 
 def normalize_sync_servers(

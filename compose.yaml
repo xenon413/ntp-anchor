@@ -1,0 +1,33 @@
+services:
+  ntp-anchor:
+    image: ntp-anchor:read-only
+    build:
+      context: .
+      target: runtime
+    network_mode: host
+    user: "65532:0"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    restart: "on-failure:5"
+    stop_grace_period: 2m
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    environment:
+      NTP_ANCHOR_API_HOST: "127.0.0.1"
+      NTP_ANCHOR_API_PORT: "${NTP_ANCHOR_API_PORT:-8000}"
+      NTP_ANCHOR_CYCLE: "${NTP_ANCHOR_CYCLE:-300}"
+      NTP_ANCHOR_THRESH: "${NTP_ANCHOR_THRESH:-0.5}"
+      NTP_ANCHOR_NTP_SERVERS: "${NTP_ANCHOR_NTP_SERVERS:-pool.ntp.org,time.google.com,time.cloudflare.com}"
+      NTP_ANCHOR_NTP_PORT: "${NTP_ANCHOR_NTP_PORT:-123}"
+      NTP_ANCHOR_QUORUM: "${NTP_ANCHOR_QUORUM:-2}"
+      NTP_ANCHOR_LOG_FILE: /var/log/ntp-anchor/ntp-anchor.log
+      NTP_ANCHOR_LOG_LEVEL: "${NTP_ANCHOR_LOG_LEVEL:-info}"
+    volumes:
+      - ntp-anchor-logs:/var/log/ntp-anchor
+
+volumes:
+  ntp-anchor-logs:

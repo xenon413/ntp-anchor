@@ -66,11 +66,19 @@ def test_imports_do_not_parse_arguments_bind_start_threads_or_spawn_commands() -
 
         before = tuple(thread.name for thread in threading.enumerate())
         import ntp_anchor
+        assert isinstance(ntp_anchor.timestamp(), float)
+        assert ntp_anchor.core.core_logic._default_manager is None
         import ntp_anchor.api
         import ntp_anchor._cli
         after = tuple(thread.name for thread in threading.enumerate())
         assert before == after
         assert ntp_anchor.__version__
+        platform_backends = {
+            "ntp_anchor.core.backends.windows",
+            "ntp_anchor.core.backends.linux",
+            "ntp_anchor.core.backends.darwin",
+        }
+        assert platform_backends.isdisjoint(sys.modules)
         """
     )
 
@@ -112,6 +120,8 @@ def test_core_and_cli_import_without_api_extra_and_cli_explains_install() -> Non
         from ntp_anchor import _cli
 
         assert ntp_anchor.__version__
+        assert isinstance(ntp_anchor.timestamp(), float)
+        assert ntp_anchor.core.core_logic._default_manager is None
         raise SystemExit(_cli.main([], environ={}))
         """
     )
@@ -137,8 +147,7 @@ def test_module_invocation_without_api_extra_uses_same_actionable_exit(
     blocked_api = tmp_path / "fastapi"
     blocked_api.mkdir()
     (blocked_api / "__init__.py").write_text(
-        "raise ModuleNotFoundError("
-        '"No module named \'fastapi\'", name="fastapi")\n',
+        'raise ModuleNotFoundError("No module named \'fastapi\'", name="fastapi")\n',
         encoding="utf-8",
     )
     environment = _environment()
@@ -159,4 +168,3 @@ def test_module_invocation_without_api_extra_uses_same_actionable_exit(
     assert completed.returncode == EXIT_MISSING_API_DEPENDENCIES
     assert "ntp-anchor[api]" in completed.stderr
     assert "Traceback" not in completed.stderr
-

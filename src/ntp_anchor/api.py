@@ -30,15 +30,17 @@ from ._api_config import (
     validate_allow_unbounded_correction as _validate_allow_unbounded_correction,
     validate_api_host as _validate_host,
     validate_api_port as _validate_port,
+    validate_log_file as _validate_log_file,
     validate_log_level as _validate_log_level,
     validate_server_mode as _validate_server_mode,
 )
 from ._cli import main as _cli_main
 from ._logging import configure_service_logging
-from .core.backend_factory import (
+from .core.backends import (
     detect_time_sync_privilege as _detect_time_sync_privilege,
 )
 from .core.config import SyncConfig
+from .core.core_logic import timestamp as _timestamp
 from .core.exceptions import (
     ConfigurationError,
     NTPAnchorError,
@@ -63,7 +65,7 @@ from .core.privileges import TimeSyncPrivilegeCheck, TimeSyncPrivilegeStatus
 
 
 try:
-    from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
+    from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, Response
     from fastapi.concurrency import run_in_threadpool
     from fastapi.exceptions import RequestValidationError
     from fastapi.responses import JSONResponse
@@ -161,6 +163,18 @@ class MaxCorrectionRequest(_ApiModel):
 
 class PingResponse(_ApiModel):
     status: Literal["pong"]
+
+
+class TimestampResponse(_ApiModel):
+    timestamp: Annotated[
+        float,
+        Field(
+            description=(
+                "Current system time in Unix epoch seconds, including fractional "
+                "seconds. This clock may move backward when adjusted."
+            ),
+        ),
+    ]
 
 
 class RunningResponse(_ApiModel):
@@ -372,6 +386,10 @@ class _ApiLifecycle:
                 raise _ApiLifecycleConflictError(
                     "the management server is already closing"
                 )
+            # Preflight the dynamic threshold/correction invariant before
+            # invoking the manager. The manager repeats this validation as a
+            # final guard, but API-invalid requests must not reach a mutator.
+            self._manager.config.with_thresh(seconds)
             return self._manager.set_thresh(seconds)
 
     def set_max_correction(
@@ -383,6 +401,7 @@ class _ApiLifecycle:
                 raise _ApiLifecycleConflictError(
                     "the management server is already closing"
                 )
+            self._manager.config.with_max_correction(seconds)
             return self._manager.set_max_correction(seconds)
 
     def cleanup(self) -> WorkerSnapshot:
@@ -485,6 +504,11 @@ def _log_correction_privilege(check: TimeSyncPrivilegeCheck) -> None:
 
 def _ping_route() -> PingResponse:
     return PingResponse(status="pong")
+
+
+def _timestamp_route(response: Response) -> TimestampResponse:
+    response.headers["Cache-Control"] = "no-store"
+    return TimestampResponse(timestamp=_timestamp())
 
 
 def _help_route(request: Request) -> HelpResponse:
@@ -677,6 +701,15 @@ def _route_definitions(
             "Check whether the management API is responsive.",
             _ping_route,
             PingResponse,
+        ),
+        (
+            "timestamp",
+            "/timestamp",
+            "GET",
+            no_parameters,
+            "Return the current system time as Unix epoch seconds.",
+            _timestamp_route,
+            TimestampResponse,
         ),
         (
             "help",
@@ -1172,6 +1205,7 @@ def run_server(
         raise TypeError("manager is required")
     validated_host = _validate_host(host)
     validated_port = _validate_port(port)
+    validated_log_file = _validate_log_file(log_file)
     validated_log_level = _validate_log_level(log_level)
     allow_unbounded = _validate_allow_unbounded_correction(allow_unbounded_correction)
     _validate_server_mode(workers, reload)
@@ -1184,7 +1218,7 @@ def run_server(
             "an unbounded manager requires explicit server authorization"
         )
     privilege_check = _detect_time_sync_privilege()
-    log_path = configure_service_logging(validated_log_level, log_file)
+    log_path = configure_service_logging(validated_log_level, validated_log_file)
     logger.info(
         "management service starting version=%s host=%s port=%d log_file=%s "
         "allow_unbounded_correction=%s time_sync_privilege=%s",
@@ -1307,6 +1341,7 @@ __all__ = [
     "SyncResponse",
     "ThreshRequest",
     "ThreshResponse",
+    "TimestampResponse",
     "TimeSyncPrivilegeCheck",
     "TimeSyncPrivilegeStatus",
     "UvicornShutdownAdapter",

@@ -2,8 +2,8 @@ import subprocess
 
 import pytest
 
-from ntp_anchor.core import darwin_time_sync
-from ntp_anchor.core.darwin_time_sync import DarwinTimeSync
+from ntp_anchor.core.backends import darwin as darwin_time_sync
+from ntp_anchor.core.backends.darwin import DarwinTimeSync
 from ntp_anchor.core.exceptions import (
     TimeServiceCommandError,
     TimeServicePermissionError,

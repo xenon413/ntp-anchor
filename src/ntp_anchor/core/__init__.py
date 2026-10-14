@@ -12,6 +12,7 @@ from .core_logic import (
     measure_ntp,
     start_time_service,
     sync_time,
+    timestamp,
 )
 from .manager import SyncManager
 from .models import (
@@ -48,4 +49,5 @@ __all__ = [
     "measure_ntp",
     "start_time_service",
     "sync_time",
+    "timestamp",
 ]

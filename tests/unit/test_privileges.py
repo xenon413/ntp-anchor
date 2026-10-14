@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from ntp_anchor.core import backend_factory
+from ntp_anchor.core.backends import factory as backend_factory
 from ntp_anchor.core.privileges import (
     TimeSyncPrivilegeCheck,
     TimeSyncPrivilegeStatus,

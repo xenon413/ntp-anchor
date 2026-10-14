@@ -3,14 +3,14 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
-from ntp_anchor.core import windows_time_sync
+from ntp_anchor.core.backends import windows as windows_time_sync
+from ntp_anchor.core.backends.windows import WindowsTimeSync
 from ntp_anchor.core.exceptions import (
     TimeServiceCommandError,
     TimeServicePermissionError,
     TimeServiceTimeoutError,
 )
 from ntp_anchor.core.privileges import TimeSyncPrivilegeStatus
-from ntp_anchor.core.windows_time_sync import WindowsTimeSync
 
 
 def _status(

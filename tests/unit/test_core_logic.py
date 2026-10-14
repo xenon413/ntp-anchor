@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+import ntp_anchor
 import ntp_anchor.core.core_logic as core_logic
 from ntp_anchor.core.config import SyncConfig
 from ntp_anchor.core.exceptions import WorkerStateError
@@ -22,6 +23,25 @@ from ntp_anchor.core.models import (
 pytestmark = pytest.mark.unit
 
 NOW = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+
+def test_timestamp_reads_fresh_epoch_seconds_without_a_manager(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    readings = [1_700_000_000.125, 1_700_000_001.5, 1_699_999_999.75]
+    clock = MagicMock(side_effect=readings)
+    manager = MagicMock(side_effect=AssertionError("timestamp must not use a manager"))
+    monkeypatch.setattr(core_logic, "_system_time", clock)
+    monkeypatch.setattr(core_logic, "get_default_manager", manager)
+    monkeypatch.setattr(core_logic, "_default_manager", None)
+
+    # All public import paths read on every call, even if the clock moves back.
+    assert ntp_anchor.timestamp() == readings[0]
+    assert ntp_anchor.core.timestamp() == readings[1]
+    assert core_logic.timestamp() == readings[2]
+    assert clock.call_count == 3
+    manager.assert_not_called()
+    assert core_logic._default_manager is None
 
 
 def _query_result(offset: float = 0.1) -> NTPQueryResult:
@@ -223,4 +243,3 @@ def test_per_call_check_overrides_do_not_replace_default_manager(
     assert operation_config.quorum == 1
     assert operation_config.max_correction == pytest.approx(2.0)
     assert default.config == _config(cycle=60.0)
-

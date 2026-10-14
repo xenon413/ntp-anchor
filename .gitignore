@@ -1,5 +1,6 @@
 .venv/
 .pytest_cache/
+.pytest-tmp-*/
 .mypy_cache/
 .ruff_cache/
 __pycache__/
@@ -10,6 +11,9 @@ htmlcov/
 build/
 dist/
 .smoke-*/
+.env
+.env.*
+!.env.example
 # ignore .log 
 logs/*
 !logs/.gitkeep

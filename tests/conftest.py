@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import socket
 import subprocess
+import tempfile
 from typing import Any
 
 import pytest
@@ -56,7 +57,21 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:
+    # Configure the base before pytest's temporary-path factory is initialized.
+    # Direct children of the project root avoid a shared admin/user temp parent.
+    if config.option.basetemp is None:
+        managed_tmp = tempfile.TemporaryDirectory(
+            prefix=f".pytest-tmp-{os.getpid()}-",
+            dir=config.rootpath,
+            ignore_cleanup_errors=True,
+        )
+        config.option.basetemp = managed_tmp.name
+        # Config cleanup runs after session teardown even when tests fail; the
+        # bound callback also keeps this directory alive until then.
+        config.add_cleanup(managed_tmp.cleanup)
+
     descriptions = {
         "unit": "isolated tests with no real network or privileged operations",
         "integration": "deterministic integration tests using local resources only",
@@ -106,10 +121,7 @@ def pytest_collection_modifyitems(
         if item.get_closest_marker("privileged") is not None:
             if not privileged_enabled:
                 item.add_marker(skip_privileged)
-            if (
-                item.get_closest_marker("live_network") is not None
-                and not live_enabled
-            ):
+            if item.get_closest_marker("live_network") is not None and not live_enabled:
                 item.add_marker(skip_live)
             continue
         if item.get_closest_marker("live_network") is not None and not live_enabled:

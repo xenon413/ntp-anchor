@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import platform
 
-from .base_time_sync import BaseTimeSync
+from .base import BaseTimeSync
 from .command_runner import CommandRunner, DEFAULT_COMMAND_TIMEOUT
-from .exceptions import UnsupportedOSError
-from .privileges import TimeSyncPrivilegeCheck, TimeSyncPrivilegeStatus
+from ..exceptions import UnsupportedOSError
+from ..privileges import TimeSyncPrivilegeCheck, TimeSyncPrivilegeStatus
 
 
 def detect_time_sync_privilege(
@@ -18,19 +18,19 @@ def detect_time_sync_privilege(
     try:
         selected_os = (os_name or platform.system()).strip().casefold()
         if selected_os == "windows":
-            from .windows_time_sync import (
+            from .windows import (
                 detect_time_sync_privilege as detect_windows_privilege,
             )
 
             check = detect_windows_privilege()
         elif selected_os == "linux":
-            from .linux_time_sync import (
+            from .linux import (
                 detect_time_sync_privilege as detect_linux_privilege,
             )
 
             check = detect_linux_privilege()
         elif selected_os == "darwin":
-            from .darwin_time_sync import (
+            from .darwin import (
                 detect_time_sync_privilege as detect_darwin_privilege,
             )
 
@@ -66,18 +66,18 @@ def create_time_sync_backend(
     command_runner = runner or CommandRunner(timeout=command_timeout)
 
     if selected_os == "windows":
-        from .windows_time_sync import WindowsTimeSync
+        from .windows import WindowsTimeSync
 
         return WindowsTimeSync(
             command_runner,
             service_start_timeout=command_timeout,
         )
     if selected_os == "linux":
-        from .linux_time_sync import LinuxTimeSync
+        from .linux import LinuxTimeSync
 
         return LinuxTimeSync(command_runner)
     if selected_os == "darwin":
-        from .darwin_time_sync import DarwinTimeSync
+        from .darwin import DarwinTimeSync
 
         return DarwinTimeSync(command_runner)
 

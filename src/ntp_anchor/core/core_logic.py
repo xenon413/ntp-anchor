@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import replace
 import threading
+from time import time as _system_time
 
-from .backend_factory import create_time_sync_backend
+from .backends import create_time_sync_backend
 from .config import DEFAULT_NTP_SERVERS, SyncConfig
 from .exceptions import WorkerStateError
 from .manager import SyncManager, TimeSyncBackend
@@ -16,6 +17,16 @@ from .ntp_client import NTPClient, NTPQueryClient
 
 _default_manager: SyncManager | None = None
 _default_manager_lock = threading.RLock()
+
+
+def timestamp() -> float:
+    """Return current system time as Unix epoch seconds, including fractions.
+
+    Reads the local wall clock without a manager, NTP query, or privilege check.
+    Clock corrections can move this value backward; it is not a duration timer.
+    """
+
+    return _system_time()
 
 
 def create_sync_manager(
@@ -28,12 +39,16 @@ def create_sync_manager(
     """Create an explicitly owned manager with lazy backend initialization."""
 
     selected_config = config if config is not None else SyncConfig()
-    backend_factory = None
+    backend_factory: Callable[[], TimeSyncBackend] | None = None
     if backend is None:
-        backend_factory = lambda: create_time_sync_backend(
-            os_name,
-            command_timeout=selected_config.command_timeout,
-        )
+
+        def build_backend() -> TimeSyncBackend:
+            return create_time_sync_backend(
+                os_name,
+                command_timeout=selected_config.command_timeout,
+            )
+
+        backend_factory = build_backend
     return SyncManager(
         selected_config,
         client=client,
@@ -252,4 +267,5 @@ __all__ = [
     "measure_ntp",
     "start_time_service",
     "sync_time",
+    "timestamp",
 ]

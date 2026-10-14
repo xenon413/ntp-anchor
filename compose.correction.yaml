@@ -1,0 +1,10 @@
+# Native, rootful Linux only. This capability can change the Docker host clock.
+services:
+  ntp-anchor:
+    image: ntp-anchor:correction
+    build:
+      context: .
+      target: correction
+    user: "0:0"
+    cap_add:
+      - SYS_TIME

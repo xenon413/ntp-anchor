@@ -25,6 +25,7 @@ from .core import (
     measure_ntp,
     start_time_service,
     sync_time,
+    timestamp,
 )
 
 
@@ -60,4 +61,5 @@ __all__ = [
     "measure_ntp",
     "start_time_service",
     "sync_time",
+    "timestamp",
 ]

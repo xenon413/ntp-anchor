@@ -2,14 +2,14 @@ import subprocess
 
 import pytest
 
-from ntp_anchor.core import linux_time_sync
+from ntp_anchor.core.backends import linux as linux_time_sync
+from ntp_anchor.core.backends.linux import LinuxTimeSync
 from ntp_anchor.core.exceptions import (
     TimeServiceCommandError,
     TimeServicePermissionError,
     TimeServiceUnavailableError,
 )
 from ntp_anchor.core.privileges import TimeSyncPrivilegeStatus
-from ntp_anchor.core.linux_time_sync import LinuxTimeSync
 
 
 class FakeRunner:

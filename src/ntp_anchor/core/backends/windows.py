@@ -9,10 +9,10 @@ import math
 import re
 import time
 
-from .base_time_sync import BaseTimeSync, normalize_sync_servers
+from .base import BaseTimeSync, normalize_sync_servers
 from .command_runner import CommandResult, CommandRunner
-from .exceptions import TimeServiceCommandError, TimeServiceTimeoutError
-from .privileges import TimeSyncPrivilegeCheck, TimeSyncPrivilegeStatus
+from ..exceptions import TimeServiceCommandError, TimeServiceTimeoutError
+from ..privileges import TimeSyncPrivilegeCheck, TimeSyncPrivilegeStatus
 
 
 logger = logging.getLogger(__name__)

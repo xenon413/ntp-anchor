@@ -133,7 +133,7 @@ def test_cli_refuses_a_real_occupied_loopback_port() -> None:
     assert "Traceback" not in completed.stderr
 
 
-def test_api_subprocess_ping_status_and_close_exit_gracefully() -> None:
+def test_api_subprocess_ping_timestamp_status_and_close_exit_gracefully() -> None:
     port = _available_port()
     process = subprocess.Popen(
         _module_command(port),
@@ -145,6 +145,15 @@ def test_api_subprocess_ping_status_and_close_exit_gracefully() -> None:
     )
     try:
         _wait_until_ready(process, port)
+
+        before = time.time()
+        timestamp_code, timestamp_payload = _request(port, "GET", "/timestamp")
+        after = time.time()
+        assert timestamp_code == 200
+        assert set(timestamp_payload) == {"timestamp"}
+        timestamp = timestamp_payload["timestamp"]
+        assert isinstance(timestamp, float)
+        assert before <= timestamp <= after
 
         status_code, status = _request(port, "GET", "/status")
         assert status_code == 200
@@ -171,4 +180,3 @@ def test_api_subprocess_ping_status_and_close_exit_gracefully() -> None:
                 "API subprocess required forced cleanup "
                 f"(stdout={stdout!r}, stderr={stderr!r})"
             )
-
