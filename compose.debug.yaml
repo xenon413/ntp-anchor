@@ -1,0 +1,18 @@
+# Native, rootful Linux only. Includes clock-setting privileges for debugging.
+services:
+  ntp-anchor:
+    image: ntp-anchor:privileged
+    build:
+      context: .
+      target: privileged
+    user: "0:0"
+    cap_add:
+      - SYS_TIME
+    environment:
+      NTP_ANCHOR_LOG_LEVEL: "debug"
+    command: ["--allow-unbounded-correction"]
+    volumes:
+      - ntp-anchor-privileged-logs:/var/log/ntp-anchor
+
+volumes:
+  ntp-anchor-privileged-logs:

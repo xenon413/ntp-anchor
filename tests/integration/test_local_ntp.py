@@ -127,4 +127,3 @@ def test_ntp_udp_port_is_independent_from_same_numbered_tcp_listener() -> None:
             tcp_listener.close()
 
     assert result.servers == ("127.0.0.1",)
-

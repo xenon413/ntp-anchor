@@ -409,10 +409,10 @@ The supplied image has two build targets:
 - `runtime` is the default. It runs as UID `65532`, contains no clock-setting
   utility, and supports the read-only management routes such as `/ping`,
   `/status`, and `/offset`.
-- `correction` installs Debian's `ntpsec-ntpdate` provider and is selected only
-  by `compose.correction.yaml`. That override runs as UID `0` and adds only the
-  Linux `SYS_TIME` capability after the base configuration drops all
-  capabilities.
+- `privileged` installs Debian's `ntpsec-ntpdate` provider and is selected
+  by `compose.privileged.yaml`, `compose.privileged-unbounded.yaml`, or
+  `compose.debug.yaml`. These overrides run as UID `0` and add only the Linux
+  `SYS_TIME` capability after the base configuration drops all capabilities.
 
 The API deliberately accepts loopback binds only. Consequently, the Compose
 configuration uses host networking and does not publish any ports. Do not add
@@ -434,14 +434,41 @@ curl -s -X POST http://127.0.0.1:8000/offset
 ```
 
 For a native, rootful Linux Docker Engine whose host clock this service is
-explicitly authorized to change, add the correction override:
+explicitly authorized to change, add the privileged override:
 
 ```console
-docker compose -f compose.yaml -f compose.correction.yaml config --quiet
-docker compose -f compose.yaml -f compose.correction.yaml \
+docker compose -f compose.yaml -f compose.privileged.yaml config --quiet
+docker compose -f compose.yaml -f compose.privileged.yaml \
   up --build --detach
 curl -s -X POST http://127.0.0.1:8000/start
 ```
+
+To also allow disabling the correction limit through the API while retaining
+the base log level (default `info`), use `compose.privileged-unbounded.yaml`.
+It includes the clock-setting privileges, so only the base file is needed
+alongside it:
+
+```console
+docker compose -f compose.yaml -f compose.privileged-unbounded.yaml config --quiet
+docker compose -f compose.yaml -f compose.privileged-unbounded.yaml up --build --detach
+```
+
+This retains the image's entrypoint and runs
+`ntp-anchor-api --allow-unbounded-correction` under Tini.
+The CLI-only flag permits a later `POST /set-max-correction` request with
+`{"max_correction": -1}` to disable the limit; it does not disable the limit
+or start synchronization by itself.
+
+For debugging with the same clock-setting privileges, use `compose.debug.yaml`
+with the base file; it already includes the privileged configuration:
+
+```console
+docker compose -f compose.yaml -f compose.debug.yaml config --quiet
+docker compose -f compose.yaml -f compose.debug.yaml up --build --detach
+```
+
+This sets `NTP_ANCHOR_LOG_LEVEL=debug` and runs the same command as the
+privileged-unbounded override, including the unbounded-correction opt-in.
 
 `SYS_TIME` permits changing the Docker host's system clock. Never replace the
 narrow capability with `privileged: true`, and do not mount the Docker socket,
@@ -452,12 +479,16 @@ DNS plus UDP port 123 to the configured authorities.
 
 The container always starts with the periodic worker stopped, including after
 a restart; `/ping` reports API liveness only. Call `/start` again when periodic
-correction is desired. Logs are written to stdout and the named
-`ntp-anchor-logs` volume. Inspect and stop the deployment with:
+correction is desired. Logs are written to stdout and a named volume:
+`ntp-anchor-logs` for the default read-only deployment, or
+`ntp-anchor-privileged-logs` for all three privileged overrides. Both mount at
+`/var/log/ntp-anchor`. Separate volumes avoid file-ownership conflicts when
+switching between UID `65532` and UID `0`; existing read-only logs remain in
+their original volume. Inspect and stop the deployment with:
 
 ```console
 docker compose logs --follow ntp-anchor
-docker compose -f compose.yaml -f compose.correction.yaml down
+docker compose -f compose.yaml -f compose.privileged.yaml down
 ```
 
 The image uses a floating Python 3.12 security-patch tag by default. Production

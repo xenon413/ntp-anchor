@@ -82,5 +82,7 @@ Set-Date -Date "2026-10-07 00:00:00"
 # start backend thread(if testing backend thread)
 curl.exe -X POST http://127.0.0.1:8000/start
 
+side notes:
 test other endpoints include /sync, /offset
-question: can /sync, /offset work when backend thread is working
+question: can /sync, /offset work when backend thread is working?
+show max_correction in /status

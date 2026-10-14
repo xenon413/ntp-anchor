@@ -117,9 +117,7 @@ def test_service_logging_reconfiguration_replaces_owned_handlers(
         assert len(owned) == 2
         assert package_logger.level == logging.WARNING
         rotating = next(
-            handler
-            for handler in owned
-            if isinstance(handler, RotatingFileHandler)
+            handler for handler in owned if isinstance(handler, RotatingFileHandler)
         )
         assert rotating.maxBytes == 1_024
         assert rotating.backupCount == 2

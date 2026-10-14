@@ -154,9 +154,7 @@ def test_per_server_transport_failure_is_sanitized_without_losing_consensus() ->
     assert result.servers == ("good.example.com",)
     assert [
         (item.server, item.reason, item.error_type) for item in result.rejected
-    ] == [
-        ("failed.example.com", "NTP query failed", "OSError")
-    ]
+    ] == [("failed.example.com", "NTP query failed", "OSError")]
     assert "workstation.internal" not in repr(result.rejected)
 
 
@@ -223,9 +221,7 @@ def test_response_quality_policy_rejects_each_invalid_boundary(
     transport = FakeTransport({"time.example.com": _response(**overrides)})
 
     with pytest.raises(NTPQueryError):
-        NTPClient(transport).query(
-            SyncConfig(servers=("time.example.com",), quorum=1)
-        )
+        NTPClient(transport).query(SyncConfig(servers=("time.example.com",), quorum=1))
 
 
 @pytest.mark.unit

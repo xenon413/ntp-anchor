@@ -57,7 +57,7 @@ ENTRYPOINT ["/usr/bin/tini", "--", "ntp-anchor-api"]
 
 # Explicit Linux host-clock correction target. The Compose override grants only
 # CAP_SYS_TIME at runtime; never run this target with Docker's privileged mode.
-FROM runtime-base AS correction
+FROM runtime-base AS privileged
 
 USER 0:0
 

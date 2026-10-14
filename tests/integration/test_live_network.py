@@ -18,4 +18,3 @@ def test_public_ntp_quorum_read_only() -> None:
 
     assert len(result.measurements) >= config.quorum
     assert set(result.servers).issubset(config.servers)
-

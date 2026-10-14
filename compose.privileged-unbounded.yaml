@@ -1,0 +1,16 @@
+# Native, rootful Linux only. Allows disabling the correction limit via the API.
+services:
+  ntp-anchor:
+    image: ntp-anchor:privileged
+    build:
+      context: .
+      target: privileged
+    user: "0:0"
+    cap_add:
+      - SYS_TIME
+    command: ["--allow-unbounded-correction"]
+    volumes:
+      - ntp-anchor-privileged-logs:/var/log/ntp-anchor
+
+volumes:
+  ntp-anchor-privileged-logs:

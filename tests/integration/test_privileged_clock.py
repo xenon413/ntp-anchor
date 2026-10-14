@@ -51,4 +51,3 @@ def test_real_clock_sync_and_post_verification_on_disposable_host() -> None:
         assert result.status is CheckStatus.SYNC_SUCCEEDED
         assert result.verification is not None
         assert result.synced_at is not None
-

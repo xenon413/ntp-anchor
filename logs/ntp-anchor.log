@@ -1,0 +1,60 @@
+2026-10-14T08:12:02Z | 59092 | MainThread | ntp_anchor | INFO | service logging initialized log_file=C:\Users\cheny\coding\algorithm_trading_system\ntp-anchor\logs\ntp-anchor.log max_bytes=10485760 backup_count=10
+2026-10-14T08:12:41Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | INFO | NTP sync worker started
+2026-10-14T08:12:41Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T08:12:41Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | WARNING | periodic NTP check failed: UnsafeCorrectionError: operation failed
+2026-10-14T08:12:41Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP sync worker entering retry backoff failures=1 delay=1.040779
+2026-10-14T08:12:42Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T08:12:43Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | WARNING | periodic NTP check failed: UnsafeCorrectionError: operation failed
+2026-10-14T08:12:43Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP sync worker entering retry backoff failures=2 delay=2.049622
+2026-10-14T08:12:45Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T08:12:45Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | WARNING | periodic NTP check failed: UnsafeCorrectionError: operation failed
+2026-10-14T08:12:45Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP sync worker entering retry backoff failures=3 delay=3.587389
+2026-10-14T08:12:48Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T08:12:48Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | WARNING | periodic NTP check failed: UnsafeCorrectionError: operation failed
+2026-10-14T08:12:48Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP sync worker entering retry backoff failures=4 delay=8.684932
+2026-10-14T08:12:57Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T08:12:57Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | WARNING | periodic NTP check failed: UnsafeCorrectionError: operation failed
+2026-10-14T08:12:57Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP sync worker entering retry backoff failures=5 delay=15.734597
+2026-10-14T08:13:13Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T08:13:13Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | WARNING | periodic NTP check failed: UnsafeCorrectionError: operation failed
+2026-10-14T08:13:13Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP sync worker entering retry backoff failures=6 delay=38.342829
+2026-10-14T08:13:32Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | INFO | NTP sync worker stopped
+2026-10-14T08:14:26Z | 59092 | AnyIO worker thread | ntp_anchor.core.manager | WARNING | NTP maximum correction updated previous=5.000000 current=unbounded running=False
+2026-10-14T08:14:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | INFO | NTP sync worker started
+2026-10-14T08:14:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T08:14:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | INFO | clock correction requested offset_seconds=12835.223377 source_count=3
+2026-10-14T08:14:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.backends.windows | DEBUG | start prepared time sync
+2026-10-14T08:14:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.backends.windows | DEBUG | ensuring the Windows time service is running
+2026-10-14T08:14:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.backends.windows | DEBUG | Windows time service is running
+2026-10-14T08:14:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.backends.windows | DEBUG | prepared time sync complete
+2026-10-14T11:48:53Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | WARNING | periodic NTP check failed: TimeServiceCommandError: operation failed
+2026-10-14T11:48:53Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP sync worker entering retry backoff failures=7 delay=60.000000
+2026-10-14T11:49:53Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T11:49:53Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=0.001242
+2026-10-14T11:54:53Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T11:54:54Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=0.003116
+2026-10-14T11:59:54Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T11:59:54Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=0.000964
+2026-10-14T12:04:54Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T12:04:54Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=0.003454
+2026-10-14T12:09:54Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T12:09:54Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=0.004149
+2026-10-14T12:14:54Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T12:14:55Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=0.001539
+2026-10-14T12:19:55Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T12:19:55Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=0.001793
+2026-10-14T12:24:55Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T12:24:55Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=0.002707
+2026-10-14T12:29:55Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T12:29:55Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=-0.000618
+2026-10-14T12:34:55Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T12:34:55Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=-0.000116
+2026-10-14T12:39:55Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T12:39:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=-0.001071
+2026-10-14T12:44:00Z | 59092 | AnyIO worker thread | ntp_anchor.core.manager | WARNING | NTP maximum correction updated previous=unbounded current=unbounded running=True
+2026-10-14T12:44:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T12:44:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=-0.000102
+2026-10-14T12:49:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T12:49:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=-0.000511
+2026-10-14T12:54:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check started source_count=3 quorum=2 threshold=0.500000
+2026-10-14T12:54:56Z | 59092 | ntp-anchor-sync | ntp_anchor.core.manager | DEBUG | NTP check completed status=within_threshold offset_seconds=-0.002942

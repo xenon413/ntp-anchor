@@ -242,8 +242,7 @@ class WorkerStopTimeoutError(NTPAnchorError, TimeoutError):
         else:
             parsed_timeout = float(timeout)
             message = (
-                "Background sync worker did not stop within "
-                f"{parsed_timeout:.3f}s."
+                f"Background sync worker did not stop within {parsed_timeout:.3f}s."
             )
         super().__init__(message)
         self.timeout = parsed_timeout
